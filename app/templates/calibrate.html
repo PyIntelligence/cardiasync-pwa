@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>CardiaSync - Calibração de Pressão</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f8fafc; color: #1e293b; padding: 20px; max-width: 600px; margin: auto; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 15px; }
+        .form-group { margin-bottom: 10px; }
+        label { display: block; font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; }
+        input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 4px; }
+        button { background: #0284c7; color: #fff; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; }
+        button:hover { background: #0369a1; }
+        #captureStatus { margin-top: 10px; font-weight: bold; color: #0369a1; }
+    </style>
+</head>
+<body>
+    <h2>CardiaSync — Calibração por Câmera (PPG)</h2>
+    
+    <div class="card">
+        <h3>Passo 1: Medição no Aparelho de Braço</h3>
+        <div class="form-group">
+            <label>Pressão Sistólica (Máxima):</label>
+            <input type="number" id="sysRef" placeholder="Ex: 120" />
+        </div>
+        <div class="form-group">
+            <label>Pressão Diastólica (Mínima):</label>
+            <input type="number" id="diaRef" placeholder="Ex: 80" />
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Passo 2: Captura com a Câmera e Flash</h3>
+        <p style="font-size: 0.85rem; color: #64748b;">Tampe a lente traseira e o flash com o dedo indicador. O sistema medirá a variação do sangue por 10 segundos.</p>
+        <button onclick="startCalibrationCapture()">Iniciar Captura com Flash</button>
+        <div id="captureStatus">Status: Aguardando início...</div>
+    </div>
+
+    <div class="card" style="text-align: center;">
+        <a href="/export/pdf?user_id=usuario_demo" target="_blank" style="text-decoration: none; color: #0284c7; font-weight: bold;">📥 Baixar Relatório Médico em PDF</a>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/camera_ppg.js') }}"></script>
+</body>
+</html>

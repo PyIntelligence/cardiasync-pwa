@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Medir Pressão — CardiaSync PWA{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="font-size: 1.2rem; margin-bottom: 10px; color: #0f172a;">Medição por Câmera (PPG)</h2>
+    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 15px;">
+        Selecione seu estado atual, encoste o dedo cobrindo totalmente a câmera traseira e o Flash, e pressione iniciar.
+    </p>
+
+    <div style="margin-bottom: 15px;">
+        <label style="display: block; font-weight: bold; font-size: 0.9rem; margin-bottom: 5px;">Condição Atual:</label>
+        <select id="measureCondition" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff;">
+            <option value="Repouso">Repouso</option>
+            <option value="Jejum">Jejum</option>
+            <option value="Pós-almoço">Pós-almoço</option>
+            <option value="Pós-exercício">Pós-exercício</option>
+        </select>
+    </div>
+
+    <button id="startMeasureBtn" onclick="startMeasurementCapture()" class="btn-primary">
+        🔴 Iniciar Captura da Câmera (10s)
+    </button>
+
+    <div id="measureStatus" style="margin-top: 15px; font-weight: bold; color: #0369a1; text-align: center;">
+        Status: Aguardando toque no botão...
+    </div>
+</div>
+
+<div id="resultCard" class="card" style="display: none; background-color: #f0fdf4; border-color: #bbf7d0;">
+    <h3 style="color: #166534; font-size: 1.1rem; margin-bottom: 10px;">Resultado da Medição</h3>
+    <div style="display: flex; justify-content: space-around; text-align: center; margin: 15px 0;">
+        <div>
+            <span style="font-size: 0.8rem; color: #475569; text-transform: uppercase; font-weight: bold;">Sistólica</span>
+            <div id="resSystolic" style="font-size: 2rem; font-weight: bold; color: #15803d;">--</div>
+            <span style="font-size: 0.8rem; color: #64748b;">mmHg</span>
+        </div>
+        <div style="font-size: 2rem; color: #cbd5e1; align-self: center;">/</div>
+        <div>
+            <span style="font-size: 0.8rem; color: #475569; text-transform: uppercase; font-weight: bold;">Diastólica</span>
+            <div id="resDiastolic" style="font-size: 2rem; font-weight: bold; color: #15803d;">--</div>
+            <span style="font-size: 0.8rem; color: #64748b;">mmHg</span>
+        </div>
+    </div>
+    <div id="resCalibratedBadge" style="text-align: center; font-size: 0.85rem; font-weight: 600; color: #166534;"></div>
+    <div id="resWarning" style="color: #b91c1c; font-size: 0.85rem; text-align: center; margin-top: 10px;"></div>
+</div>
+
+<script src="{{ url_for('static', filename='js/camera_ppg.js') }}"></script>
+<script>
+async function startMeasurementCapture() {
+    const statusEl = document.getElementById("measureStatus");
+    const resultCard = document.getElementById("resultCard");
+    const btn = document.getElementById("startMeasureBtn");
+
+    resultCard.style.display = "none";
+    btn.disabled = true;
+    statusEl.innerText = "Status: Ligando Flash e Câmera... Mantenha o dedo firme.";
+
+    try {
+        // Dispara a captura de 10s reutilizando o camera_ppg.js
+        const ppgData = await capturePPGSignal(10);
+        statusEl.innerText = "Status: Processando variações de sangue...";
+
+        // Extrai features simples no frontend
+        const meanVal = ppgData.reduce((a, b) => a + b, 0) / ppgData.length;
+        const maxVal = Math.max(...ppgData);
+        const minVal = Math.min(...ppgData);
+        const amplitude = maxVal - minVal;
+
+        const condition = document.getElementById("measureCondition").value;
+
+        // Envia para o backend para processamento no modelo placeholder/calibrado
+        const response = await fetch('/api/measure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: 'usuario_demo',
+                condition: condition,
+                signal_features: {
+                    mean_amplitude: parseFloat(amplitude.toFixed(4)),
+                    mean_intensity: parseFloat(meanVal.toFixed(4)),
+                    heart_rate: 72
+                }
+            })
+        });
+
+        const data = await response.json();
+        
+        document.getElementById("resSystolic").innerText = data.systolic;
+        document.getElementById("resDiastolic").innerText = data.diastolic;
+        document.getElementById("resCalibratedBadge").innerText = data.calibrated ? "✓ Medição realizada com Modelo Calibrado" : "⚠️ Medição sem calibração prévia";
+        document.getElementById("resWarning").innerText = data.warning || "";
+
+        resultCard.style.display = "block";
+        statusEl.innerText = "Status: Medição concluída!";
+    } catch(err) {
+        console.error(err);
+        statusEl.innerText = "Erro ao acessar a câmera. Certifique-se de estar em conexão HTTPS ou localhost.";
+    } finally {
+        btn.disabled = false;
+    }
+}
+</script>
+{% endblock %}

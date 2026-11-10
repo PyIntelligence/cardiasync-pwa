@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — CardiaSync PWA{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="font-size: 1.3rem; margin-bottom: 10px; color: #0f172a;">Bem-vindo ao CardiaSync</h2>
+    <p style="color: #64748b; font-size: 0.95rem; line-height: 1.5; margin-bottom: 20px;">
+        Este aplicativo utiliza a câmera do seu celular com o Flash/LED ligado para ler a variação do volume sanguíneo (Fotopletismografia - PPG) e estimar sua pressão arterial.
+    </p>
+    
+    <div style="background-color: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+        <h4 style="color: #0369a1; margin-bottom: 5px;">Status da Sua Calibração</h4>
+        <p style="font-size: 0.9rem; color: #334155;" id="calibrationStatusText">
+            Carregando status de calibração...
+        </p>
+    </div>
+
+    <a href="{{ url_for('main.measure_page') }}" class="btn-primary" style="margin-bottom: 10px;">
+        ❤️ Medir Pressão pela Câmera
+    </a>
+    
+    <a href="{{ url_for('main.calibrate_page') }}" class="btn-secondary">
+        ⚙️ Nova Calibração com Medidor
+    </a>
+</div>
+
+<div class="card">
+    <h3 style="font-size: 1.1rem; margin-bottom: 10px; color: #0f172a;">Relatório Médico & Histórico</h3>
+    <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 15px;">
+        Baixe o arquivo PDF consolidado com todo o seu histórico de medições e parâmetros de onda capturados.
+    </p>
+    <a href="/export/pdf?user_id=usuario_demo" target="_blank" class="btn-secondary" style="background-color: #0f172a; color: #ffffff;">
+        📄 Exportar Relatório em PDF
+    </a>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", async () => {
+        try {
+            const res = await fetch('/api/calibration-status?user_id=usuario_demo');
+            const data = await res.json();
+            const textEl = document.getElementById("calibrationStatusText");
+            if (data.active) {
+                textEl.innerHTML = `<strong>Calibração Ativa:</strong> Criada em ${data.created_at} (Ref: ${data.systolic_ref}/${data.diastolic_ref} mmHg)`;
+            } else {
+                textEl.innerHTML = `<span style="color: #b91c1c;">Nenhuma calibração recente encontrada. Recomenda-se realizar uma calibração prévia.</span>`;
+            }
+        } catch(e) {
+            document.getElementById("calibrationStatusText").innerText = "Pronto para nova calibração.";
+        }
+    });
+</script>
+{% endblock %}

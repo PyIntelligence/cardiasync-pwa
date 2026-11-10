@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page { size: A4; margin: 12mm 15mm; }
+        body { font-family: Helvetica, Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.4; }
+        .header { background: #0f172a; color: #fff; padding: 15px; margin: -12mm -15mm 15px -15mm; }
+        .title { font-size: 16pt; font-weight: bold; color: #38bdf8; }
+        .section { font-size: 12pt; font-weight: bold; border-left: 4px solid #0284c7; padding-left: 6px; margin-top: 15px; margin-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+        th { background: #f1f5f9; text-align: left; padding: 6px; font-size: 8.5pt; border-bottom: 2px solid #cbd5e1; }
+        td { padding: 6px; border-bottom: 1px solid #e2e8f0; font-size: 9pt; }
+        .disclaimer { background: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; padding: 8px; border-radius: 4px; font-size: 8pt; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">CardiaSync — Relatório Clínico PPG</div>
+        <div>Usuário: {{ user_id }}</div>
+    </div>
+
+    <div class="section">1. Histórico de Calibrações</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Data</th>
+                <th>Ref. Aparelho (mmHg)</th>
+                <th>Features (PPG)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in calibrations %}
+            <tr>
+                <td>{{ c.created_at }}</td>
+                <td><strong>{{ c.systolic_ref }} / {{ c.diastolic_ref }}</strong></td>
+                <td>{{ c.signal_features }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="section">2. Histórico de Medições Estimadas</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Data</th>
+                <th>Estimativa Câmera</th>
+                <th>Condição</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in measurements %}
+            <tr>
+                <td>{{ m.created_at }}</td>
+                <td><strong>{{ m.systolic }} / {{ m.diastolic }} mmHg</strong></td>
+                <td>{{ m.condition }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="disclaimer">
+        <strong>Aviso:</strong> Dados experimentais obtidos por fotopletismografia (PPG) via câmera de smartphone com calibração de referência. Não substitui diagnósticos clínicos oficiais.
+    </div>
+</body>
+</html>
