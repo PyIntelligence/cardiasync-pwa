@@ -174,3 +174,57 @@ function capturePPGSignal(seconds = 10) {
         }
     });
 }
+
+// ==========================================================
+// 3. GERENCIADOR DE INSTALAÇÃO DO PWA (Android / iOS)
+// ==========================================================
+
+let deferredPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    // Impede o banner padrão do Chrome de aparecer imediatamente
+    e.preventDefault();
+    deferredPrompt = e;
+    
+    // Exibe o botão de instalação personalizado na interface
+    const installContainer = document.getElementById('pwaInstallContainer');
+    if (installContainer) {
+        installContainer.style.display = 'block';
+    }
+});
+
+async function installPWA() {
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+            console.log('Usuário aceitou instalar o PWA');
+        }
+        deferredPrompt = null;
+        document.getElementById('pwaInstallContainer').style.display = 'none';
+    } else {
+        // Fallback caso acesse via iOS ou navegador que não dispara o evento direto
+        showIOSInstallGuide();
+    }
+}
+
+function showIOSInstallGuide() {
+    const iosModal = document.getElementById('iosInstallModal');
+    if (iosModal) {
+        iosModal.style.display = 'block';
+    } else {
+        alert("Para instalar no iPhone/iPad: Toque no botão 'Compartilhar' do Safari e selecione 'Adicionar à Tela de Início'.");
+    }
+}
+
+// Detecta se já está rodando como app instalado (Standalone)
+window.addEventListener('DOMContentLoaded', () => {
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (isStandalone) {
+        console.log('O app já está rodando instalado no dispositivo.');
+        const installContainer = document.getElementById('pwaInstallContainer');
+        if (installContainer) {
+            installContainer.style.display = 'none';
+        }
+    }
+});
