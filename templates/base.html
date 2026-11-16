@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="description" content="CardiaSync PWA — Monitoramento experimental de PPG por câmera" />
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icons/icon.svg') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon.svg') }}" />
+  <title>{% block title %}CardiaSync PWA{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="{{ url_for('static', filename='icons/icon.svg') }}" alt="Logo" class="brand-icon" />
+      <span class="brand-name">CardiaSync <small>PWA</small></span>
+    </div>
+    <nav class="nav">
+      <a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Início</a>
+      <a href="{{ url_for('calibrate_page') }}" class="{% if request.endpoint == 'calibrate_page' %}active{% endif %}">Calibrar</a>
+      <a href="{{ url_for('measure_page') }}" class="{% if request.endpoint == 'measure_page' %}active{% endif %}">Medir</a>
+      <a href="{{ url_for('historico') }}" class="{% if request.endpoint == 'historico' %}active{% endif %}">Histórico</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <p>CardiaSync PWA © 2026 — Sistema experimental de PPG</p>
+    <p class="disclaimer">⚠️ Não é um dispositivo médico. As medições são estimativas experimentais e não devem ser usadas para diagnóstico ou tratamento.</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

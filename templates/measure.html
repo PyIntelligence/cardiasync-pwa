@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Medir — CardiaSync{% endblock %}
+
+{% block content %}
+<section class="measure-section">
+  <div class="card measure-card">
+    <h2>Medição por Câmera (PPG)</h2>
+    <p class="hint">
+      Encoste o dedo cobrindo <strong>totalmente</strong> a câmera traseira e o flash.
+      Mantenha o celular estável. Você verá o preview ao vivo abaixo.
+    </p>
+
+    <!-- Preview da câmera + overlay -->
+    <div class="camera-wrapper" id="cameraWrapper">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="finger-guide" id="fingerGuide">
+        <div class="guide-circle"></div>
+        <span class="guide-text">Posicione o dedo aqui</span>
+      </div>
+      <div class="camera-status" id="cameraStatus">Aguardando câmera…</div>
+    </div>
+
+    <!-- Controles de contexto -->
+    <div class="form-row">
+      <label for="userName">Nome</label>
+      <input type="text" id="userName" placeholder="Seu nome" value="Anônimo" />
+    </div>
+
+    <div class="form-row">
+      <label for="condition">Condição Atual</label>
+      <select id="condition">
+        <option value="Repouso">Repouso</option>
+        <option value="Acordado">Acordado</option>
+        <option value="Após exercício">Após exercício</option>
+      </select>
+    </div>
+
+    <div class="form-row two-cols">
+      <div>
+        <label for="feeding">Alimentação</label>
+        <select id="feeding">
+          <option value="">—</option>
+          <option value="Jejum">Jejum</option>
+          <option value="Normal">Normal</option>
+        </select>
+      </div>
+      <div>
+        <label for="position">Posição</label>
+        <select id="position">
+          <option value="">—</option>
+          <option value="Sentado">Sentado</option>
+          <option value="Deitado">Deitado</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row two-cols">
+      <div>
+        <label for="arm">Braço</label>
+        <select id="arm">
+          <option value="">—</option>
+          <option value="Direito">Direito</option>
+          <option value="Esquerdo">Esquerdo</option>
+        </select>
+      </div>
+      <div>
+        <label for="pulseHeight">Altura do Sensor</label>
+        <select id="pulseHeight">
+          <option value="">—</option>
+          <option value="Peito">Peito</option>
+          <option value="Coxa">Coxa</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label for="observation">Observação</label>
+      <input type="text" id="observation" placeholder="Opcional" />
+    </div>
+
+    <div class="form-row two-cols">
+      <div>
+        <label for="email">E-mail (para envio do PDF)</label>
+        <input type="email" id="email" placeholder="opcional@email.com" />
+      </div>
+      <div>
+        <label for="phone">WhatsApp (com DDD)</label>
+        <input type="tel" id="phone" placeholder="83999999999" />
+      </div>
+    </div>
+
+    <div class="form-row" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;">
+      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);">
+        <input type="checkbox" id="sendEmail" /> Enviar PDF por e-mail
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);">
+        <input type="checkbox" id="sendWhatsapp" /> Notificar no WhatsApp
+      </label>
+    </div>
+
+    <!-- Botão principal -->
+    <button id="btnStart" class="btn btn-primary btn-lg" disabled>
+      <span class="btn-icon">🔴</span> Iniciar Captura (15s)
+    </button>
+
+    <!-- Progresso -->
+    <div class="progress-area" id="progressArea" hidden>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-text">
+        <span id="countdown">15</span>s restantes
+        <span id="qualityBadge" class="badge">Qualidade: —</span>
+      </div>
+    </div>
+
+    <!-- Resultado -->
+    <div class="result-box" id="resultBox" hidden>
+      <h3>Resultado</h3>
+      <div class="result-grid">
+        <div class="result-item">
+          <span class="label">Frequência Cardíaca</span>
+          <span class="value" id="resHR">—</span>
+          <span class="unit">bpm</span>
+        </div>
+        <div class="result-item">
+          <span class="label">Pressão Estimada</span>
+          <span class="value" id="resBP">—</span>
+          <span class="unit">mmHg</span>
+        </div>
+        <div class="result-item">
+          <span class="label">Qualidade do Sinal</span>
+          <span class="value" id="resQuality">—</span>
+        </div>
+      </div>
+      <p class="result-msg" id="resMsg"></p>
+      <div id="sendStatus" style="font-size:0.85rem;color:var(--muted);margin:0.5rem 0;"></div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
+        <a id="btnPdf" class="btn btn-secondary" href="#" target="_blank" style="flex:1;display:none;">📄 Baixar PDF</a>
+      </div>
+    </div>
+
+    <!-- Erros -->
+    <div class="error-box" id="errorBox" hidden>
+      <p id="errorText"></p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/measure.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Início — CardiaSync{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-icon">
+    <img src="{{ url_for('static', filename='icons/icon.svg') }}" alt="CardiaSync" width="96" height="96" />
+  </div>
+  <h1>CardiaSync</h1>
+  <p class="subtitle">Monitoramento experimental de frequência cardíaca e estimativa de pressão arterial por fotopletismografia (PPG) com a câmera do celular.</p>
+
+  <div class="card-grid">
+    <a href="{{ url_for('calibrate_page') }}" class="action-card">
+      <div class="action-icon">📐</div>
+      <h3>Calibrar</h3>
+      <p>Meça primeiro com o aparelho de pressão e depois com a câmera para criar o modelo personalizado.</p>
+    </a>
+    <a href="{{ url_for('measure_page') }}" class="action-card primary">
+      <div class="action-icon">📷</div>
+      <h3>Medir</h3>
+      <p>Capture o sinal PPG com o dedo sobre a câmera e o flash. Veja o preview ao vivo.</p>
+    </a>
+    <a href="{{ url_for('historico') }}" class="action-card">
+      <div class="action-icon">📊</div>
+      <h3>Histórico</h3>
+      <p>Veja todas as medições e calibrações salvas no banco de dados.</p>
+    </a>
+  </div>
+
+  <div class="info-box">
+    <h4>Como funciona a calibração</h4>
+    <ol>
+      <li>Meça a pressão com um esfigmomanômetro validado.</li>
+      <li>Imediatamente depois, faça a captura pela câmera na tela <strong>Calibrar</strong>.</li>
+      <li>Repita algumas vezes (ideal ≥ 5) em condições parecidas.</li>
+      <li>O sistema guarda os pares e, no futuro, treina um modelo simples de regressão.</li>
+    </ol>
+  </div>
+</section>
+{% endblock %}

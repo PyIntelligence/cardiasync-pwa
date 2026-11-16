@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Histórico — CardiaSync{% endblock %}
+
+{% block content %}
+<section>
+  <h2>Histórico de Medições</h2>
+  <div class="table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Data/Hora</th>
+          <th>Nome</th>
+          <th>FC</th>
+          <th>Sistólica</th>
+          <th>Diastólica</th>
+          <th>Qualidade</th>
+          <th>Condição</th>
+          <th>Observação</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in measurements %}
+        <tr>
+          <td>{{ m.created_at.strftime('%d/%m/%Y %H:%M:%S') if m.created_at else '—' }}</td>
+          <td>{{ m.user.name if m.user else '—' }}</td>
+          <td>{{ m.heart_rate or '—' }}</td>
+          <td>{{ m.estimated_systolic or '—' }}</td>
+          <td>{{ m.estimated_diastolic or '—' }}</td>
+          <td>{{ '%.0f'|format(m.signal_quality * 100) if m.signal_quality else '—' }}%</td>
+          <td>{{ m.condition or '—' }}</td>
+          <td>{{ m.observation or '' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="empty">Nenhuma medição ainda.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2 style="margin-top: 2.5rem;">Histórico de Calibrações</h2>
+  <div class="table-wrapper">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Data/Hora</th>
+          <th>Nome</th>
+          <th>Ref. Sistólica</th>
+          <th>Ref. Diastólica</th>
+          <th>FC</th>
+          <th>Qualidade</th>
+          <th>Condição</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in calibrations %}
+        <tr>
+          <td>{{ c.created_at.strftime('%d/%m/%Y %H:%M:%S') if c.created_at else '—' }}</td>
+          <td>{{ c.user.name if c.user else '—' }}</td>
+          <td>{{ c.ref_systolic }}</td>
+          <td>{{ c.ref_diastolic }}</td>
+          <td>{{ c.heart_rate or '—' }}</td>
+          <td>{{ '%.0f'|format(c.signal_quality * 100) if c.signal_quality else '—' }}%</td>
+          <td>{{ c.condition or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="empty">Nenhuma calibração ainda.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

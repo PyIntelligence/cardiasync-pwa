@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Calibrar — CardiaSync{% endblock %}
+
+{% block content %}
+<section class="measure-section">
+  <div class="card measure-card">
+    <h2>Calibração com Aparelho de Pressão</h2>
+    <p class="hint">
+      <strong>Passo 1:</strong> Meça a pressão com o esfigmomanômetro (braço ou pulso validado).<br>
+      <strong>Passo 2:</strong> Imediatamente depois, informe os valores abaixo e capture o sinal da câmera.
+    </p>
+
+    <div class="steps">
+      <div class="step active" id="step1">1. Valores do aparelho</div>
+      <div class="step" id="step2">2. Captura da câmera</div>
+      <div class="step" id="step3">3. Resultado</div>
+    </div>
+
+    <!-- Passo 1: Valores de referência -->
+    <div id="panelStep1">
+      <div class="form-row two-cols">
+        <div>
+          <label for="refSystolic">Pressão Sistólica (mmHg)</label>
+          <input type="number" id="refSystolic" min="70" max="220" placeholder="Ex: 120" required />
+        </div>
+        <div>
+          <label for="refDiastolic">Pressão Diastólica (mmHg)</label>
+          <input type="number" id="refDiastolic" min="40" max="130" placeholder="Ex: 80" required />
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="userNameCal">Nome</label>
+        <input type="text" id="userNameCal" placeholder="Seu nome" value="Anônimo" />
+      </div>
+
+      <div class="form-row">
+        <label for="conditionCal">Condição</label>
+        <select id="conditionCal">
+          <option value="Repouso">Repouso</option>
+          <option value="Acordado">Acordado</option>
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="notesCal">Observação (opcional)</label>
+        <input type="text" id="notesCal" placeholder="Ex: medido no braço direito" />
+      </div>
+
+      <button id="btnGoToCamera" class="btn btn-primary btn-lg">
+        Continuar para Captura da Câmera →
+      </button>
+    </div>
+
+    <!-- Passo 2: Câmera -->
+    <div id="panelStep2" hidden>
+      <div class="camera-wrapper" id="cameraWrapperCal">
+        <video id="videoCal" playsinline muted autoplay></video>
+        <canvas id="overlayCal"></canvas>
+        <div class="finger-guide" id="fingerGuideCal">
+          <div class="guide-circle"></div>
+          <span class="guide-text">Posicione o dedo aqui</span>
+        </div>
+        <div class="camera-status" id="cameraStatusCal">Aguardando câmera…</div>
+      </div>
+
+      <button id="btnStartCal" class="btn btn-primary btn-lg" disabled>
+        <span class="btn-icon">🔴</span> Iniciar Captura de Calibração (15s)
+      </button>
+
+      <div class="progress-area" id="progressAreaCal" hidden>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progressFillCal"></div>
+        </div>
+        <div class="progress-text">
+          <span id="countdownCal">15</span>s restantes
+          <span id="qualityBadgeCal" class="badge">Qualidade: —</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Passo 3: Resultado -->
+    <div id="panelStep3" hidden>
+      <div class="result-box" id="resultBoxCal">
+        <h3>Calibração salva</h3>
+        <p id="calMsg"></p>
+        <div class="result-grid">
+          <div class="result-item">
+            <span class="label">Referência</span>
+            <span class="value" id="resRef">—</span>
+          </div>
+          <div class="result-item">
+            <span class="label">FC no momento</span>
+            <span class="value" id="resHRCal">—</span>
+          </div>
+          <div class="result-item">
+            <span class="label">Qualidade</span>
+            <span class="value" id="resQualityCal">—</span>
+          </div>
+        </div>
+        <a href="{{ url_for('calibrate_page') }}" class="btn btn-secondary">Nova calibração</a>
+        <a href="{{ url_for('measure_page') }}" class="btn btn-primary">Ir para Medir</a>
+      </div>
+    </div>
+
+    <div class="error-box" id="errorBoxCal" hidden>
+      <p id="errorTextCal"></p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/calibrate.js') }}"></script>
+{% endblock %}
