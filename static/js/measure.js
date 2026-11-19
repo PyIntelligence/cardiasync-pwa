@@ -280,6 +280,33 @@
         data.signal_quality != null ? Math.round(data.signal_quality * 100) + "%" : "—";
       document.getElementById("resMsg").textContent = data.message || "";
 
+      // HRV / PRV (PPG) e validação ECG opcional
+      const prv = (data.variability && data.variability.prv) || {};
+      const elRm = document.getElementById("resRmssd");
+      const elSd = document.getElementById("resSdnn");
+      const elPn = document.getElementById("resPnn50");
+      const elNote = document.getElementById("resHrvNote");
+      const elEcg = document.getElementById("resEcgNote");
+      if (elRm) elRm.textContent = prv.rmssd_ms != null ? prv.rmssd_ms : "—";
+      if (elSd) elSd.textContent = prv.sdnn_ms != null ? prv.sdnn_ms : "—";
+      if (elPn) elPn.textContent = prv.pnn50_pct != null ? prv.pnn50_pct : "—";
+      if (elNote) {
+        elNote.textContent = prv.n_intervals
+          ? `PRV (PPG): ${prv.n_intervals} intervalos · ${prv.reliable ? "confiável para janela curta" : "poucos batimentos — experimental"}`
+          : "PRV indisponível (poucos picos detectados).";
+      }
+      if (elEcg) {
+        if (data.variability && data.variability.ecg_provided) {
+          const cmp = data.variability.comparison || {};
+          elEcg.textContent =
+            (cmp.message || "Comparação com ECG") +
+            (cmp.delta_rmssd_ms != null ? ` · ΔRMSSD ${cmp.delta_rmssd_ms} ms` : "") +
+            (cmp.delta_mean_hr_bpm != null ? ` · ΔFC ${cmp.delta_mean_hr_bpm} bpm` : "");
+        } else {
+          elEcg.textContent = "Sem ECG — validação por eletrocardiograma omitida (modo normal).";
+        }
+      }
+
       // PDF
       const btnPdf = document.getElementById("btnPdf");
       if (btnPdf && data.measurement_id) {

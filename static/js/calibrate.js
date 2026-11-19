@@ -215,6 +215,9 @@
       condition: document.getElementById("conditionCal").value,
       user_name: document.getElementById("userNameCal").value.trim() || "Anônimo",
       notes: document.getElementById("notesCal").value || "",
+      age: document.getElementById("ageCal")?.value || null,
+      sex: document.getElementById("sexCal")?.value || null,
+      skin_tone: document.getElementById("skinCal")?.value || null,
     };
 
     try {

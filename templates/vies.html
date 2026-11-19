@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Validação e viés — CardiaSync{% endblock %}
+
+{% block content %}
+<section>
+  <h2>Validação do modelo global + viés + outliers</h2>
+  <p class="hint" style="margin-bottom:1rem;">
+    Validação cruzada da precisão (MAE, % dentro de 5/10/15 mmHg), análise de viés demográfico
+    e detecção de outliers nos dados de calibração PPG.
+  </p>
+
+  <div class="form-row" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button id="btnBias" class="btn btn-primary">Atualizar relatórios</button>
+    <button id="btnTrainGlobal" class="btn btn-secondary">Retreinar global (sem outliers)</button>
+    <button id="btnValidate" class="btn btn-secondary">Só validar precisão</button>
+    <button id="btnOutliers" class="btn btn-secondary">Só outliers</button>
+  </div>
+
+  <div id="status" class="hint" style="margin:1rem 0;"></div>
+  <div id="warnings" class="error-box" hidden></div>
+
+  <div class="card" style="margin-top:1rem;" id="valCard" hidden>
+    <h3>Precisão do modelo (validação cruzada)</h3>
+    <div id="validationBox"></div>
+  </div>
+
+  <div class="card" style="margin-top:1rem;" id="outCard" hidden>
+    <h3>Outliers</h3>
+    <div id="outlierBox"></div>
+  </div>
+
+  <div class="card" style="margin-top:1rem;" id="overallCard" hidden>
+    <h3>Viés geral</h3>
+    <div id="overall"></div>
+  </div>
+
+  <div class="card" style="margin-top:1rem;" id="tablesCard" hidden>
+    <h3>Por sexo</h3>
+    <div class="table-wrapper"><table class="data-table" id="tblSex"><thead></thead><tbody></tbody></table></div>
+    <h3 style="margin-top:1.25rem;">Por faixa etária</h3>
+    <div class="table-wrapper"><table class="data-table" id="tblAge"><thead></thead><tbody></tbody></table></div>
+    <h3 style="margin-top:1.25rem;">Por tom de pele</h3>
+    <div class="table-wrapper"><table class="data-table" id="tblSkin"><thead></thead><tbody></tbody></table></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function fmt(v) {
+  if (v === null || v === undefined) return "—";
+  return typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(1)) : v;
+}
+
+function fillTable(tableId, data) {
+  const tbl = document.getElementById(tableId);
+  const thead = tbl.querySelector("thead");
+  const tbody = tbl.querySelector("tbody");
+  thead.innerHTML = `<tr>
+    <th>Grupo</th><th>n</th>
+    <th>Bias SBP</th><th>MAE SBP</th><th>Std SBP</th>
+    <th>Bias DBP</th><th>MAE DBP</th><th>Std DBP</th>
+  </tr>`;
+  tbody.innerHTML = "";
+  const keys = Object.keys(data || {}).sort();
+  if (!keys.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Sem dados</td></tr>`;
+    return;
+  }
+  for (const k of keys) {
+    const s = data[k].systolic || {};
+    const d = data[k].diastolic || {};
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${k}</td><td>${s.n ?? 0}</td>
+      <td>${fmt(s.bias)}</td><td>${fmt(s.mae)}</td><td>${fmt(s.std)}</td>
+      <td>${fmt(d.bias)}</td><td>${fmt(d.mae)}</td><td>${fmt(d.std)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderValidation(v) {
+  const card = document.getElementById("valCard");
+  const box = document.getElementById("validationBox");
+  if (!v || !v.ok) {
+    card.hidden = !v;
+    box.innerHTML = v && v.error ? `<p>${v.error}</p>` : "<p>Sem validação.</p>";
+    if (v) card.hidden = false;
+    return;
+  }
+  card.hidden = false;
+  const s = v.systolic || {}, d = v.diastolic || {};
+  box.innerHTML = `
+    <p><strong>Amostras:</strong> ${v.n_samples} (avaliadas ${v.n_evaluated}) · folds ${v.n_folds} · grau ${v.degree}
+       · outliers removidos ${v.outliers_removed ?? 0}</p>
+    <p><strong>SBP</strong> — MAE ${fmt(s.mae)} · RMSE ${fmt(s.rmse)} · bias ${fmt(s.bias)}
+       · ≤5 mmHg ${fmt(s.pct_within_5)}% · ≤10 ${fmt(s.pct_within_10)}% · ≤15 ${fmt(s.pct_within_15)}%
+       · R² ${fmt(s.r2)} · grau BHS≈ <strong>${v.bhs_grade_systolic || "—"}</strong></p>
+    <p><strong>DBP</strong> — MAE ${fmt(d.mae)} · RMSE ${fmt(d.rmse)} · bias ${fmt(d.bias)}
+       · ≤5 mmHg ${fmt(d.pct_within_5)}% · ≤10 ${fmt(d.pct_within_10)}% · ≤15 ${fmt(d.pct_within_15)}%
+       · R² ${fmt(d.r2)} · grau BHS≈ <strong>${v.bhs_grade_diastolic || "—"}</strong></p>
+    <p class="hint">${v.interpretation || ""}</p>
+  `;
+}
+
+function renderOutliers(data) {
+  const card = document.getElementById("outCard");
+  const box = document.getElementById("outlierBox");
+  card.hidden = false;
+  const fo = data.feature_outliers || {};
+  const ro = data.residual_outliers || {};
+  let html = `<p><strong>Features:</strong> ${fo.n_outliers ?? 0} outliers / ${fo.n ?? 0}
+     (${fmt((fo.outlier_fraction || 0) * 100)}%) · z≥${fo.z_threshold ?? 3}</p>`;
+  if (fo.details && fo.details.length) {
+    html += "<ul>" + fo.details.slice(0, 8).map(d =>
+      `<li>#${d.index}: PA ${d.ref_systolic}/${d.ref_diastolic}, FC ${fmt(d.hr)}, max z ${d.max_z}
+        ${(d.hard_rules || []).join("; ")} ${(d.z_extreme_features || []).join(", ")}</li>`
+    ).join("") + "</ul>";
+  }
+  if (ro.ok) {
+    html += `<p><strong>Resíduos do modelo:</strong> ${ro.n_flagged} flagged / ${ro.n}
+      · RMSE SBP ${fmt(ro.rmse_systolic)} · DBP ${fmt(ro.rmse_diastolic)}</p>`;
+  } else if (ro.error) {
+    html += `<p>Resíduos: ${ro.error}</p>`;
+  }
+  box.innerHTML = html;
+}
+
+async function loadBias() {
+  const status = document.getElementById("status");
+  status.textContent = "Carregando…";
+  const res = await fetch("/api/bias-report");
+  const data = await res.json();
+  if (!data.ok) {
+    status.textContent = "Falha ao carregar relatório.";
+    return;
+  }
+  const r = data.report || {};
+  status.textContent = `Viés — amostras: ${r.total_used ?? "—"}` +
+    (data.model_type ? ` · Modelo: ${data.model_type}` : "") +
+    (data.cached ? " · (cache)" : "");
+
+  const w = document.getElementById("warnings");
+  if (r.warnings && r.warnings.length) {
+    w.hidden = false;
+    w.innerHTML = r.warnings.map(x => `<p>${x}</p>`).join("");
+  } else {
+    w.hidden = true;
+  }
+
+  if (data.validation) renderValidation(data.validation);
+
+  document.getElementById("overallCard").hidden = false;
+  document.getElementById("tablesCard").hidden = false;
+  const o = r.overall || {};
+  document.getElementById("overall").innerHTML = `
+    <p><strong>SBP</strong> — bias ${fmt(o.systolic?.bias)} · MAE ${fmt(o.systolic?.mae)} · std ${fmt(o.systolic?.std)} (n=${o.systolic?.n ?? 0})</p>
+    <p><strong>DBP</strong> — bias ${fmt(o.diastolic?.bias)} · MAE ${fmt(o.diastolic?.mae)} · std ${fmt(o.diastolic?.std)} (n=${o.diastolic?.n ?? 0})</p>
+  `;
+  fillTable("tblSex", r.by_sex);
+  fillTable("tblAge", r.by_age_group);
+  fillTable("tblSkin", r.by_skin_tone);
+}
+
+document.getElementById("btnBias").addEventListener("click", loadBias);
+document.getElementById("btnTrainGlobal").addEventListener("click", async () => {
+  const status = document.getElementById("status");
+  status.textContent = "Treinando modelo polinomial global (filtrando outliers)…";
+  const res = await fetch("/api/train-global", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ degree: 2, remove_outliers: true }),
+  });
+  const data = await res.json();
+  status.textContent = data.message || data.error || JSON.stringify(data);
+  if (data.ok) {
+    if (data.extra && data.extra.validation) renderValidation(data.extra.validation);
+    loadBias();
+  }
+});
+document.getElementById("btnValidate").addEventListener("click", async () => {
+  document.getElementById("status").textContent = "Validando…";
+  const res = await fetch("/api/validate-global");
+  const data = await res.json();
+  renderValidation(data);
+  document.getElementById("status").textContent = data.ok ? "Validação concluída." : (data.error || "Falha");
+});
+document.getElementById("btnOutliers").addEventListener("click", async () => {
+  document.getElementById("status").textContent = "Detectando outliers…";
+  const res = await fetch("/api/outliers");
+  const data = await res.json();
+  renderOutliers(data);
+  document.getElementById("status").textContent = "Outliers atualizados.";
+});
+
+loadBias();
+</script>
+{% endblock %}

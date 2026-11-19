@@ -5,13 +5,19 @@ db = SQLAlchemy()
 
 
 class User(db.Model):
-    """Usuário simples (nome do dono do celular / paciente)."""
+    """Usuário / paciente (dados demográficos opcionais para análise de viés)."""
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     phone = db.Column(db.String(30))
     email = db.Column(db.String(120))
+
+    # Demografia (opcional — LGPD: coletar só com consentimento)
+    age = db.Column(db.Integer)                    # anos
+    sex = db.Column(db.String(20))                 # Feminino, Masculino, Outro, Prefiro não dizer
+    skin_tone = db.Column(db.String(30))           # Clara, Média, Escura (proxy grosseiro)
+
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     measurements = db.relationship("Measurement", backref="user", lazy=True)
@@ -20,31 +26,32 @@ class User(db.Model):
 
 class Calibration(db.Model):
     """
-    Tabela de calibrações.
-    Guarda o valor de referência do esfigmomanômetro + features do sinal PPG
-    para treinar / ajustar o modelo de estimativa.
+    Par (referência do esfigmomanômetro + features PPG).
+    Usado no treino pessoal e no modelo polinomial global.
     """
     __tablename__ = "calibrations"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
 
-    # Valores de referência do aparelho de pressão
     ref_systolic = db.Column(db.Float, nullable=False)
     ref_diastolic = db.Column(db.Float, nullable=False)
 
-    # Features extraídas do sinal PPG no momento da calibração
-    heart_rate = db.Column(db.Float)               # BPM médio
-    signal_quality = db.Column(db.Float)           # 0-1
-    mean_red = db.Column(db.Float)                 # intensidade média canal vermelho
-    std_red = db.Column(db.Float)                  # desvio padrão
-    peak_amplitude = db.Column(db.Float)           # amplitude média dos picos
-    pulse_width = db.Column(db.Float)              # largura média do pulso (s)
-    features_json = db.Column(db.Text)             # JSON com features extras (futuro)
+    heart_rate = db.Column(db.Float)
+    signal_quality = db.Column(db.Float)
+    mean_red = db.Column(db.Float)
+    std_red = db.Column(db.Float)
+    peak_amplitude = db.Column(db.Float)
+    pulse_width = db.Column(db.Float)
+    features_json = db.Column(db.Text)
 
-    # Contexto da calibração
-    condition = db.Column(db.String(30))           # Repouso, Acordado, etc.
+    condition = db.Column(db.String(30))
     notes = db.Column(db.Text)
+
+    # Snapshot demográfico no momento da calibração (para viés, mesmo se user mudar depois)
+    age = db.Column(db.Integer)
+    sex = db.Column(db.String(20))
+    skin_tone = db.Column(db.String(30))
 
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -53,34 +60,33 @@ class Calibration(db.Model):
 
 
 class Measurement(db.Model):
-    """Medições realizadas pela câmera (após ou sem calibração)."""
     __tablename__ = "measurements"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
 
-    # Resultados
     heart_rate = db.Column(db.Float)
     estimated_systolic = db.Column(db.Float)
     estimated_diastolic = db.Column(db.Float)
     signal_quality = db.Column(db.Float)
 
-    # Features brutas (para reprocessamento futuro)
     mean_red = db.Column(db.Float)
     std_red = db.Column(db.Float)
     features_json = db.Column(db.Text)
 
-    # Metadados clínicos / contexto
-    condition = db.Column(db.String(30))           # Repouso, Acordado
-    feeding = db.Column(db.String(20))             # Jejum, Normal
-    position = db.Column(db.String(20))            # Sentado, Deitado
-    arm = db.Column(db.String(20))                 # Direito, Esquerdo
-    pulse_height = db.Column(db.String(20))        # Coxa, Peito, etc.
-    period = db.Column(db.String(20))              # Repouso, Acordado
+    condition = db.Column(db.String(30))
+    feeding = db.Column(db.String(20))
+    position = db.Column(db.String(20))
+    arm = db.Column(db.String(20))
+    pulse_height = db.Column(db.String(20))
+    period = db.Column(db.String(20))
     observation = db.Column(db.Text)
 
-    # Calibração usada (se houver)
     calibration_id = db.Column(db.Integer, db.ForeignKey("calibrations.id"), nullable=True)
+
+    # Intervalo de confiança da previsão (se modelo global polinomial)
+    sbp_std = db.Column(db.Float)
+    dbp_std = db.Column(db.Float)
 
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -90,22 +96,26 @@ class Measurement(db.Model):
 
 class CalibrationModel(db.Model):
     """
-    Placeholder para o modelo de calibração treinado.
-    Quando houver dados suficientes, um job pode treinar uma regressão
-    e salvar os coeficientes aqui.
+    Modelo treinado (pessoal ou global).
+    user_id NULL = modelo populacional global.
     """
     __tablename__ = "calibration_models"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)  # null = modelo global
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
 
-    model_type = db.Column(db.String(50), default="linear")  # linear, ridge, etc.
-    coefficients_json = db.Column(db.Text)                   # coeficientes serializados
+    model_type = db.Column(db.String(50), default="ridge")  # ridge, polynomial
+    scope = db.Column(db.String(20), default="personal")    # personal | global
+    degree = db.Column(db.Integer, default=1)               # grau polinomial
+    coefficients_json = db.Column(db.Text)
     intercept_systolic = db.Column(db.Float)
     intercept_diastolic = db.Column(db.Float)
     r2_score = db.Column(db.Float)
+    residual_std_sbp = db.Column(db.Float)                  # para intervalo de predição
+    residual_std_dbp = db.Column(db.Float)
     n_samples = db.Column(db.Integer)
     is_active = db.Column(db.Boolean, default=True)
+    bias_report_json = db.Column(db.Text)                   # último relatório de viés (só global)
 
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))

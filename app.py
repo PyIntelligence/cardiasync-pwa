@@ -12,7 +12,18 @@ from calibration_engine import (
     extract_basic_features,
     estimate_blood_pressure,
     train_simple_linear_model,
+    train_polynomial_global_model,
+    MIN_GLOBAL,
 )
+from bias_analysis import analyze_demographic_bias
+from validation_outliers import (
+    detect_signal_outliers,
+    detect_calibration_outliers,
+    filter_calibrations_remove_outliers,
+    validate_global_model,
+    residual_outliers_with_model,
+)
+from hrv import build_variability_report
 from pdf_report import build_measurement_pdf
 from notify import send_email_with_pdf, send_whatsapp_notification
 
@@ -40,10 +51,20 @@ def create_tables():
         app._tables_created = True
 
 
-def get_or_create_user(name: str, email: str = None, phone: str = None):
+def get_or_create_user(
+    name: str,
+    email: str = None,
+    phone: str = None,
+    age: int = None,
+    sex: str = None,
+    skin_tone: str = None,
+):
     user = User.query.filter_by(name=name).first()
     if not user:
-        user = User(name=name, email=email, phone=phone)
+        user = User(
+            name=name, email=email, phone=phone,
+            age=age, sex=sex, skin_tone=skin_tone,
+        )
         db.session.add(user)
         db.session.flush()
     else:
@@ -51,47 +72,55 @@ def get_or_create_user(name: str, email: str = None, phone: str = None):
             user.email = email
         if phone and not user.phone:
             user.phone = phone
+        if age is not None:
+            user.age = age
+        if sex:
+            user.sex = sex
+        if skin_tone:
+            user.skin_tone = skin_tone
     return user
 
 
+def _load_coeffs(model: CalibrationModel):
+    if not model or not model.coefficients_json:
+        return None
+    try:
+        return json.loads(model.coefficients_json)
+    except Exception:
+        return None
+
+
 def get_active_coeffs(user_id=None):
-    """Busca modelo ativo (prioriza do usuário, senão global)."""
+    """Prioriza modelo pessoal ativo; senão modelo global polinomial."""
     q = CalibrationModel.query.filter_by(is_active=True)
     if user_id:
-        m = q.filter_by(user_id=user_id).order_by(CalibrationModel.created_at.desc()).first()
-        if m and m.coefficients_json:
-            try:
-                return json.loads(m.coefficients_json)
-            except Exception:
-                pass
-    m = q.filter(CalibrationModel.user_id.is_(None)).order_by(
-        CalibrationModel.created_at.desc()
-    ).first()
-    if m and m.coefficients_json:
-        try:
-            return json.loads(m.coefficients_json)
-        except Exception:
-            pass
-    # fallback: qualquer ativo
-    m = q.order_by(CalibrationModel.created_at.desc()).first()
-    if m and m.coefficients_json:
-        try:
-            return json.loads(m.coefficients_json)
-        except Exception:
-            pass
+        m = (
+            q.filter_by(user_id=user_id)
+            .order_by(CalibrationModel.created_at.desc())
+            .first()
+        )
+        coeffs = _load_coeffs(m)
+        if coeffs:
+            return coeffs
+
+    m = (
+        q.filter(CalibrationModel.user_id.is_(None))
+        .order_by(CalibrationModel.created_at.desc())
+        .first()
+    )
+    coeffs = _load_coeffs(m)
+    if coeffs:
+        return coeffs
     return None
 
 
 def maybe_train_model(user_id: int):
-    """
-    Se o usuário tiver ≥ 5 calibrações com qualidade razoável,
-    treina regressão linear e salva em CalibrationModel.
-    """
+    """Treina Ridge pessoal se ≥ 5 calibrações boas do usuário."""
     cals = (
         Calibration.query.filter_by(user_id=user_id)
         .filter(Calibration.signal_quality >= 0.3)
         .order_by(Calibration.created_at.desc())
-        .limit(30)
+        .limit(40)
         .all()
     )
     if len(cals) < 5:
@@ -101,24 +130,92 @@ def maybe_train_model(user_id: int):
     if not coeffs:
         return None, len(cals)
 
-    # Desativa modelos anteriores do usuário
     CalibrationModel.query.filter_by(user_id=user_id, is_active=True).update(
         {"is_active": False}
     )
-
     model = CalibrationModel(
         user_id=user_id,
         model_type=coeffs.get("model_type", "ridge"),
+        scope="personal",
+        degree=1,
         coefficients_json=json.dumps(coeffs),
         intercept_systolic=coeffs["systolic"]["intercept"],
         intercept_diastolic=coeffs["diastolic"]["intercept"],
         r2_score=(coeffs.get("r2_systolic", 0) + coeffs.get("r2_diastolic", 0)) / 2,
+        residual_std_sbp=coeffs.get("residual_std_sbp"),
+        residual_std_dbp=coeffs.get("residual_std_dbp"),
         n_samples=coeffs.get("n_samples", len(cals)),
         is_active=True,
     )
     db.session.add(model)
     db.session.commit()
     return coeffs, len(cals)
+
+
+def train_global_polynomial(degree: int = 2, remove_outliers: bool = True):
+    """
+    Treina modelo polinomial populacional com calibrações boas,
+    opcionalmente removendo outliers de features/PA.
+    """
+    cals = (
+        Calibration.query.filter(Calibration.signal_quality >= 0.3)
+        .order_by(Calibration.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    outlier_info = None
+    train_set = cals
+    if remove_outliers and len(cals) >= MIN_GLOBAL:
+        train_set, outlier_info = filter_calibrations_remove_outliers(cals)
+        if len(train_set) < MIN_GLOBAL:
+            # se removeu demais, usa conjunto original
+            train_set = cals
+            if outlier_info is not None:
+                outlier_info["fallback_used_all"] = True
+
+    if len(train_set) < MIN_GLOBAL:
+        return None, len(cals), None, outlier_info
+
+    coeffs = train_polynomial_global_model(
+        train_set, degree=degree, min_samples=MIN_GLOBAL
+    )
+    if not coeffs:
+        return None, len(cals), None, outlier_info
+
+    bias = analyze_demographic_bias(train_set, coeffs)
+    validation = validate_global_model(
+        cals, degree=degree, remove_outliers=remove_outliers
+    )
+
+    CalibrationModel.query.filter(
+        CalibrationModel.user_id.is_(None),
+        CalibrationModel.is_active.is_(True),
+    ).update({"is_active": False})
+
+    extra = {
+        "bias": bias,
+        "validation": validation,
+        "outliers": outlier_info,
+    }
+
+    model = CalibrationModel(
+        user_id=None,
+        model_type="polynomial",
+        scope="global",
+        degree=degree,
+        coefficients_json=json.dumps(coeffs),
+        intercept_systolic=coeffs["systolic"]["intercept"],
+        intercept_diastolic=coeffs["diastolic"]["intercept"],
+        r2_score=(coeffs.get("r2_systolic", 0) + coeffs.get("r2_diastolic", 0)) / 2,
+        residual_std_sbp=coeffs.get("residual_std_sbp"),
+        residual_std_dbp=coeffs.get("residual_std_dbp"),
+        n_samples=coeffs.get("n_samples", len(train_set)),
+        is_active=True,
+        bias_report_json=json.dumps(extra, ensure_ascii=False),
+    )
+    db.session.add(model)
+    db.session.commit()
+    return coeffs, len(train_set), extra, outlier_info
 
 
 # ──────────────────────────────────────────────
@@ -181,15 +278,33 @@ def api_measure():
 
     features = extract_basic_features(red_signal, fps=fps)
 
-    if features.get("signal_quality", 0) < 0.25:
+    outlier = detect_signal_outliers(features, red_signal)
+    if features.get("signal_quality", 0) < 0.25 or outlier.get("is_outlier"):
+        reasons = ", ".join(outlier.get("reasons") or ["qualidade insuficiente"])
         return jsonify({
             "ok": False,
-            "error": "Qualidade do sinal muito baixa. Reposicione o dedo cobrindo bem a câmera e o flash, fique parado e tente de novo.",
+            "error": f"Sinal rejeitado. Motivos: {reasons}. Reposicione o dedo e tente de novo.",
+            "outlier": outlier,
         }), 400
+
+    # HRV/PRV a partir dos picos PPG; ECG opcional para validação
+    peaks = features.pop("peak_indices", []) or []
+    variability = build_variability_report(
+        peaks=peaks,
+        fps=fps,
+        ecg_rr_ms=data.get("ecg_rr_ms"),
+        ecg_peaks_sec=data.get("ecg_peaks_sec"),
+    )
+    features["hrv"] = variability.get("prv")
+    features["ecg_validation"] = {
+        "ecg_provided": variability.get("ecg_provided"),
+        "hrv_ecg": variability.get("hrv_ecg"),
+        "comparison": variability.get("comparison"),
+    }
 
     user = get_or_create_user(user_name, email=email, phone=phone)
     coeffs = get_active_coeffs(user.id)
-    sbp, dbp, status = estimate_blood_pressure(features, coeffs)
+    sbp, dbp, status, sbp_std, dbp_std = estimate_blood_pressure(features, coeffs)
 
     measurement = Measurement(
         user_id=user.id,
@@ -207,6 +322,8 @@ def api_measure():
         pulse_height=pulse_height,
         period=condition,
         observation=observation,
+        sbp_std=sbp_std,
+        dbp_std=dbp_std,
     )
     db.session.add(measurement)
     db.session.commit()
@@ -278,8 +395,13 @@ def api_measure():
         "heart_rate": features.get("heart_rate"),
         "estimated_systolic": sbp,
         "estimated_diastolic": dbp,
+        "sbp_std": sbp_std,
+        "dbp_std": dbp_std,
         "signal_quality": features.get("signal_quality"),
+        "variability": variability,
         "status": status,
+        "model_scope": (coeffs or {}).get("scope") if coeffs else None,
+        "model_type": (coeffs or {}).get("model_type") if coeffs else None,
         "message": msg,
         "features": features,
         "pdf": pdf_info,
@@ -313,18 +435,45 @@ def api_calibrate():
     user_name = (data.get("user_name") or "").strip() or "Anônimo"
     notes = data.get("notes", "")
 
+    age = data.get("age")
+    try:
+        age = int(age) if age not in (None, "") else None
+    except (TypeError, ValueError):
+        age = None
+    sex = (data.get("sex") or "").strip() or None
+    skin_tone = (data.get("skin_tone") or "").strip() or None
+
     if not red_signal or len(red_signal) < 30:
         return jsonify({"ok": False, "error": "Sinal da câmera insuficiente."}), 400
 
     features = extract_basic_features(red_signal, fps=fps)
+    outlier = detect_signal_outliers(features, red_signal)
 
-    if features.get("signal_quality", 0) < 0.35:
+    if features.get("signal_quality", 0) < 0.35 or outlier.get("is_outlier"):
+        reasons = ", ".join(outlier.get("reasons") or ["qualidade insuficiente"])
         return jsonify({
             "ok": False,
-            "error": "Qualidade do sinal baixa. Reposicione o dedo e tente novamente.",
+            "error": f"Sinal rejeitado (outlier/qualidade). Motivos: {reasons}. Reposicione o dedo e tente novamente.",
+            "outlier": outlier,
+            "features": {k: v for k, v in features.items() if k != "peak_indices"},
         }), 400
 
-    user = get_or_create_user(user_name)
+    peaks = features.pop("peak_indices", []) or []
+    variability = build_variability_report(
+        peaks=peaks,
+        fps=fps,
+        ecg_rr_ms=data.get("ecg_rr_ms"),
+        ecg_peaks_sec=data.get("ecg_peaks_sec"),
+    )
+    features["hrv"] = variability.get("prv")
+    features["ecg_validation"] = {
+        "ecg_provided": variability.get("ecg_provided"),
+        "comparison": variability.get("comparison"),
+    }
+
+    user = get_or_create_user(
+        user_name, age=age, sex=sex, skin_tone=skin_tone,
+    )
 
     calibration = Calibration(
         user_id=user.id,
@@ -339,25 +488,49 @@ def api_calibrate():
         features_json=json.dumps(features),
         condition=condition,
         notes=notes,
+        age=age or user.age,
+        sex=sex or user.sex,
+        skin_tone=skin_tone or user.skin_tone,
     )
     db.session.add(calibration)
     db.session.commit()
 
-    # Treina modelo se ≥ 5 calibrações
     coeffs, total = maybe_train_model(user.id)
     trained = coeffs is not None
 
-    msg = f"Calibração salva. Total: {total}."
+    # Tenta atualizar modelo global se já houver volume
+    global_info = None
+    all_n = Calibration.query.filter(Calibration.signal_quality >= 0.3).count()
+    if all_n >= MIN_GLOBAL:
+        g_coeffs, g_n, g_extra, _ = train_global_polynomial(degree=2)
+        if g_coeffs:
+            val = (g_extra or {}).get("validation") or {}
+            global_info = {
+                "trained": True,
+                "n_samples": g_n,
+                "r2_systolic": g_coeffs.get("r2_systolic"),
+                "r2_diastolic": g_coeffs.get("r2_diastolic"),
+                "residual_std_sbp": g_coeffs.get("residual_std_sbp"),
+                "residual_std_dbp": g_coeffs.get("residual_std_dbp"),
+                "validation_mae_sbp": (val.get("systolic") or {}).get("mae"),
+                "validation_mae_dbp": (val.get("diastolic") or {}).get("mae"),
+                "bhs_grade_sbp": val.get("bhs_grade_systolic"),
+                "bhs_grade_dbp": val.get("bhs_grade_diastolic"),
+            }
+
+    msg = f"Calibração salva. Total pessoal: {total}."
     if trained:
         msg += (
-            f" Modelo treinado com sucesso "
+            f" Modelo pessoal atualizado "
             f"(R² sistólica ≈ {coeffs.get('r2_systolic', 0):.2f}, "
             f"diastólica ≈ {coeffs.get('r2_diastolic', 0):.2f})."
         )
     elif total < 5:
-        msg += f" Faltam {5 - total} calibração(ões) de boa qualidade para treinar o modelo."
-    else:
-        msg += " Ainda não foi possível treinar o modelo (verifique qualidade dos sinais)."
+        msg += f" Faltam {5 - total} calibração(ões) pessoais para o modelo individual."
+    if global_info:
+        msg += f" Modelo global polinomial ativo (n={global_info['n_samples']})."
+    elif all_n < MIN_GLOBAL:
+        msg += f" Modelo global: faltam {MIN_GLOBAL - all_n} calibrações populacionais."
 
     return jsonify({
         "ok": True,
@@ -369,6 +542,7 @@ def api_calibrate():
             "r2_diastolic": coeffs.get("r2_diastolic") if coeffs else None,
             "n_samples": coeffs.get("n_samples") if coeffs else None,
         } if trained else None,
+        "global_model": global_info,
         "message": msg,
         "features": features,
     })
@@ -463,6 +637,144 @@ def api_send_report():
         return jsonify({"ok": False, "error": "Informe email e/ou phone"}), 400
 
     return jsonify({"ok": True, "results": results})
+
+
+# ──────────────────────────────────────────────
+# Modelo global polinomial + análise de viés
+# ──────────────────────────────────────────────
+
+@app.route("/api/train-global", methods=["POST"])
+def api_train_global():
+    """Força retreino do modelo polinomial populacional."""
+    data = request.get_json(silent=True) or {}
+    degree = int(data.get("degree", 2))
+    degree = max(1, min(3, degree))
+    remove_outliers = data.get("remove_outliers", True)
+
+    coeffs, n, extra, outlier_info = train_global_polynomial(
+        degree=degree, remove_outliers=bool(remove_outliers)
+    )
+    if not coeffs:
+        return jsonify({
+            "ok": False,
+            "error": f"Dados insuficientes (mínimo {MIN_GLOBAL} calibrações com qualidade ≥ 0,3). Atual: {n}.",
+            "n_samples": n,
+            "outliers": outlier_info,
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "n_samples": n,
+        "degree": degree,
+        "r2_systolic": coeffs.get("r2_systolic"),
+        "r2_diastolic": coeffs.get("r2_diastolic"),
+        "residual_std_sbp": coeffs.get("residual_std_sbp"),
+        "residual_std_dbp": coeffs.get("residual_std_dbp"),
+        "extra": extra,
+        "outliers": outlier_info,
+        "message": f"Modelo polinomial global (grau {degree}) treinado com {n} amostras (outliers filtrados).",
+    })
+
+
+@app.route("/api/validate-global")
+def api_validate_global():
+    """Validação cruzada da precisão do modelo global."""
+    degree = int(request.args.get("degree", 2))
+    cals = (
+        Calibration.query.filter(Calibration.signal_quality >= 0.3)
+        .order_by(Calibration.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    report = validate_global_model(cals, degree=degree, remove_outliers=True)
+    return jsonify(report)
+
+
+@app.route("/api/outliers")
+def api_outliers():
+    """Outliers de calibração (features) + resíduos do modelo ativo."""
+    cals = (
+        Calibration.query.filter(Calibration.signal_quality >= 0.3)
+        .order_by(Calibration.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    feature_outliers = detect_calibration_outliers(cals)
+    coeffs = get_active_coeffs()
+    residual = residual_outliers_with_model(cals, coeffs)
+    return jsonify({
+        "ok": True,
+        "feature_outliers": feature_outliers,
+        "residual_outliers": residual,
+    })
+
+
+@app.route("/api/bias-report")
+def api_bias_report():
+    """Relatório de viés demográfico do modelo global ativo (ou retreina análise)."""
+    m = (
+        CalibrationModel.query.filter_by(is_active=True, scope="global")
+        .order_by(CalibrationModel.created_at.desc())
+        .first()
+    )
+    if not m:
+        m = (
+            CalibrationModel.query.filter(
+                CalibrationModel.user_id.is_(None),
+                CalibrationModel.is_active.is_(True),
+            )
+            .order_by(CalibrationModel.created_at.desc())
+            .first()
+        )
+
+    coeffs = _load_coeffs(m)
+    cals = (
+        Calibration.query.filter(Calibration.signal_quality >= 0.3)
+        .order_by(Calibration.created_at.desc())
+        .limit(500)
+        .all()
+    )
+
+    if m and m.bias_report_json:
+        try:
+            cached = json.loads(m.bias_report_json)
+            bias_part = cached.get("bias") if isinstance(cached, dict) and "bias" in cached else cached
+            n_used = (bias_part or {}).get("total_used", 0)
+            if n_used >= len(cals) * 0.9 and bias_part:
+                return jsonify({
+                    "ok": True,
+                    "cached": True,
+                    "report": bias_part,
+                    "validation": cached.get("validation") if isinstance(cached, dict) else None,
+                    "outliers": cached.get("outliers") if isinstance(cached, dict) else None,
+                    "model_id": m.id,
+                })
+        except Exception:
+            pass
+
+    report = analyze_demographic_bias(cals, coeffs)
+    validation = validate_global_model(cals, degree=m.degree if m and m.degree else 2)
+    if m:
+        m.bias_report_json = json.dumps({
+            "bias": report,
+            "validation": validation,
+        }, ensure_ascii=False)
+        db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "cached": False,
+        "report": report,
+        "validation": validation,
+        "model_id": m.id if m else None,
+        "model_type": m.model_type if m else None,
+        "n_samples_model": m.n_samples if m else None,
+    })
+
+
+@app.route("/vies")
+def vies_page():
+    return render_template("vies.html")
 
 
 @app.route("/health")
