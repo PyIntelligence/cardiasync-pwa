@@ -99,6 +99,51 @@
       </label>
     </div>
 
+    <!-- ECG Profissional Opcional -->
+    <details class="form-row" id="ecgPanel" style="border:1px solid var(--border);border-radius:12px;padding:0.85rem;background:rgba(15,23,42,0.55);">
+      <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-weight:600;font-size:0.92rem;">
+        <span>⚡ Validação por ECG (Opcional)</span>
+        <span class="badge medium" id="ecgStatusBadge">Sem ECG</span>
+      </summary>
+
+      <div style="margin-top:0.8rem;">
+        <p class="hint" style="margin-bottom:0.7rem;font-size:0.84rem;">
+          Sem ECG, a pressão arterial continua sendo medida pela câmera, porém com menor segurança clínica.
+          Para validação padrão-ouro, cole os intervalos RR ou importe um arquivo <strong>.csv</strong> ou <strong>.txt</strong>.
+        </p>
+
+        <div class="form-row two-cols" style="align-items:end;margin-bottom:0.65rem;">
+          <div>
+            <label for="ecgFormatSelect">Formato dos dados</label>
+            <select id="ecgFormatSelect">
+              <option value="auto">Detectar automaticamente</option>
+              <option value="rr_ms">Intervalos RR (ms)</option>
+              <option value="peaks_sec">Tempos de Pico R (s)</option>
+            </select>
+          </div>
+          <div>
+            <label for="ecgFileInput" class="btn btn-secondary" style="margin-top:0;padding:0.7rem 0.9rem;font-size:0.9rem;cursor:pointer;">
+              📂 Carregar .CSV / .TXT
+            </label>
+            <input type="file" id="ecgFileInput" accept=".csv,.txt,text/csv,text/plain" hidden />
+          </div>
+        </div>
+
+        <div class="form-row" style="margin-bottom:0.5rem;">
+          <textarea
+            id="ecgRawInput"
+            rows="3"
+            placeholder="Cole os intervalos RR em ms (ex: 820, 815, 830, 810) ou tempos dos picos R em segundos..."
+          ></textarea>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--muted);">
+          <span id="ecgPreviewInfo">Nenhum dado de ECG carregado.</span>
+          <button type="button" id="clearEcgBtn" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.25rem 0.65rem;font-size:0.78rem;" hidden>Limpar</button>
+        </div>
+      </div>
+    </details>
+
     <!-- Botão principal -->
     <button id="btnStart" class="btn btn-primary btn-lg" disabled>
       <span class="btn-icon">🔴</span> Iniciar Captura (15s)
@@ -117,7 +162,10 @@
 
     <!-- Resultado -->
     <div class="result-box" id="resultBox" hidden>
-      <h3>Resultado</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.9rem;">
+        <h3 style="margin-bottom:0;">Resultado</h3>
+        <span class="badge medium" id="resConfidenceBadge">Confiança: —</span>
+      </div>
       <div class="result-grid">
         <div class="result-item">
           <span class="label">Frequência Cardíaca</span>
@@ -152,7 +200,7 @@
         </div>
       </div>
       <p class="result-msg" id="resHrvNote" style="font-size:0.8rem;color:var(--muted);"></p>
-      <p class="result-msg" id="resEcgNote" style="font-size:0.8rem;color:var(--muted);"></p>
+      <p class="result-msg" id="resEcgNote" style="font-size:0.82rem;"></p>
       <p class="result-msg" id="resMsg"></p>
       <div id="sendStatus" style="font-size:0.85rem;color:var(--muted);margin:0.5rem 0;"></div>
       <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">

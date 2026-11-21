@@ -19,8 +19,10 @@
           <th>Sistólica</th>
           <th>Diastólica</th>
           <th>Qualidade</th>
+          <th>Validação ECG</th>
           <th>Condição</th>
           <th>Observação</th>
+          <th>PDF</th>
         </tr>
       </thead>
       <tbody>
@@ -29,14 +31,30 @@
           <td>{{ m.created_at.strftime('%d/%m/%Y %H:%M:%S') if m.created_at else '—' }}</td>
           <td>{{ m.user.name if m.user else '—' }}</td>
           <td>{{ m.heart_rate or '—' }}</td>
-          <td>{{ m.estimated_systolic or '—' }}</td>
-          <td>{{ m.estimated_diastolic or '—' }}</td>
+          <td>
+            {% if m.estimated_systolic %}
+              {{ m.estimated_systolic }}{% if m.sbp_std %} <small style="color:var(--muted);">(±{{ '%.0f'|format(m.sbp_std) }})</small>{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if m.estimated_diastolic %}
+              {{ m.estimated_diastolic }}{% if m.dbp_std %} <small style="color:var(--muted);">(±{{ '%.0f'|format(m.dbp_std) }})</small>{% endif %}
+            {% else %}—{% endif %}
+          </td>
           <td>{{ '%.0f'|format(m.signal_quality * 100) if m.signal_quality else '—' }}%</td>
+          <td>
+            <span class="badge {{ m.ecg_badge_class or 'medium' }}" style="white-space:nowrap;">
+              {{ m.ecg_status_label or 'Sem ECG' }}
+            </span>
+          </td>
           <td>{{ m.condition or '—' }}</td>
           <td>{{ m.observation or '' }}</td>
+          <td>
+            <a href="{{ url_for('measurement_pdf', mid=m.id) }}" target="_blank" style="color:#60a5fa;text-decoration:none;font-weight:600;">📄 PDF</a>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="empty">Nenhuma medição ainda.</td></tr>
+        <tr><td colspan="10" class="empty">Nenhuma medição ainda.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -53,6 +71,7 @@
           <th>Ref. Diastólica</th>
           <th>FC</th>
           <th>Qualidade</th>
+          <th>Validação ECG</th>
           <th>Condição</th>
         </tr>
       </thead>
@@ -65,10 +84,15 @@
           <td>{{ c.ref_diastolic }}</td>
           <td>{{ c.heart_rate or '—' }}</td>
           <td>{{ '%.0f'|format(c.signal_quality * 100) if c.signal_quality else '—' }}%</td>
+          <td>
+            <span class="badge {{ c.ecg_badge_class or 'medium' }}" style="white-space:nowrap;">
+              {{ c.ecg_status_label or 'Sem ECG' }}
+            </span>
+          </td>
           <td>{{ c.condition or '—' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="empty">Nenhuma calibração ainda.</td></tr>
+        <tr><td colspan="8" class="empty">Nenhuma calibração ainda.</td></tr>
         {% endfor %}
       </tbody>
     </table>

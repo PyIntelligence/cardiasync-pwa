@@ -24,7 +24,7 @@ from validation_outliers import (
     validate_global_model,
     residual_outliers_with_model,
 )
-from hrv import build_variability_report
+from hrv import build_variability_report, assess_bp_confidence
 from pdf_report import build_measurement_pdf
 from notify import send_email_with_pdf, send_whatsapp_notification
 
@@ -132,6 +132,34 @@ def create_tables():
                 # não derruba o app inteiro; loga e segue
                 app.logger.exception("Schema ensure failed: %s", e)
         app._schema_ready = True
+
+
+def _parse_features_safe(features_json_str):
+    if not features_json_str:
+        return {}
+    try:
+        data = json.loads(features_json_str)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _attach_ecg_metadata(record):
+    feats = _parse_features_safe(getattr(record, "features_json", None))
+    ecg_val = feats.get("ecg_validation") or {}
+    bp_conf = ecg_val.get("bp_confidence") or {}
+    provided = bool(ecg_val.get("ecg_provided"))
+    record.ecg_provided = provided
+    if provided:
+        if bp_conf.get("level") == "moderate_mismatch":
+            record.ecg_status_label = "⚠️ Divergência ECG"
+            record.ecg_badge_class = "medium"
+        else:
+            record.ecg_status_label = "⚡ Validado ECG"
+            record.ecg_badge_class = "good"
+    else:
+        record.ecg_status_label = "Sem ECG"
+        record.ecg_badge_class = "medium"
 
 
 def get_or_create_user(
@@ -251,7 +279,6 @@ def train_global_polynomial(degree: int = 2, remove_outliers: bool = True):
     if remove_outliers and len(cals) >= MIN_GLOBAL:
         train_set, outlier_info = filter_calibrations_remove_outliers(cals)
         if len(train_set) < MIN_GLOBAL:
-            # se removeu demais, usa conjunto original
             train_set = cals
             if outlier_info is not None:
                 outlier_info["fallback_used_all"] = True
@@ -332,8 +359,11 @@ def historico():
         calibrations = (
             Calibration.query.order_by(Calibration.created_at.desc()).limit(50).all()
         )
+        for m in measurements:
+            _attach_ecg_metadata(m)
+        for c in calibrations:
+            _attach_ecg_metadata(c)
     except Exception as e:
-        # Schema desatualizado / conexão — mostra página vazia em vez de 500
         app.logger.exception("Erro ao carregar histórico: %s", e)
         error_msg = (
             "Não foi possível ler o banco ainda. "
@@ -389,7 +419,7 @@ def api_measure():
             "outlier": outlier,
         }), 400
 
-    # HRV/PRV a partir dos picos PPG; ECG opcional para validação
+    # HRV/PRV a partir dos picos PPG; ECG opcional para validação profissional
     peaks = features.pop("peak_indices", []) or []
     variability = build_variability_report(
         peaks=peaks,
@@ -397,16 +427,36 @@ def api_measure():
         ecg_rr_ms=data.get("ecg_rr_ms"),
         ecg_peaks_sec=data.get("ecg_peaks_sec"),
     )
-    features["hrv"] = variability.get("prv")
-    features["ecg_validation"] = {
-        "ecg_provided": variability.get("ecg_provided"),
-        "hrv_ecg": variability.get("hrv_ecg"),
-        "comparison": variability.get("comparison"),
-    }
 
     user = get_or_create_user(user_name, email=email, phone=phone)
     coeffs = get_active_coeffs(user.id)
     sbp, dbp, status, sbp_std, dbp_std = estimate_blood_pressure(features, coeffs)
+
+    bp_confidence = assess_bp_confidence(
+        ecg_status=variability.get("ecg_status", "missing"),
+        comparison=variability.get("comparison"),
+        base_sbp_std=sbp_std,
+        base_dbp_std=dbp_std,
+    )
+    final_sbp_std = (
+        bp_confidence["adjusted_sbp_std"]
+        if bp_confidence["adjusted_sbp_std"] is not None
+        else sbp_std
+    )
+    final_dbp_std = (
+        bp_confidence["adjusted_dbp_std"]
+        if bp_confidence["adjusted_dbp_std"] is not None
+        else dbp_std
+    )
+
+    features["hrv"] = variability.get("prv")
+    features["ecg_validation"] = {
+        "ecg_provided": variability.get("ecg_provided"),
+        "ecg_status": variability.get("ecg_status"),
+        "hrv_ecg": variability.get("hrv_ecg"),
+        "comparison": variability.get("comparison"),
+        "bp_confidence": bp_confidence,
+    }
 
     measurement = Measurement(
         user_id=user.id,
@@ -424,17 +474,20 @@ def api_measure():
         pulse_height=pulse_height,
         period=condition,
         observation=observation,
-        sbp_std=sbp_std,
-        dbp_std=dbp_std,
+        sbp_std=final_sbp_std,
+        dbp_std=final_dbp_std,
     )
     db.session.add(measurement)
     db.session.commit()
 
-    msg = (
-        "Estimativa calibrada com modelo treinado."
-        if status == "calibrado"
-        else "Frequência cardíaca ok. Pressão ainda sem calibração suficiente (faça ≥ 5 calibrações)."
-    )
+    if status == "calibrado":
+        msg = (
+            "Estimativa calibrada e validada por ECG (alta confiança)."
+            if bp_confidence["level"] == "high"
+            else "Estimativa calibrada apenas por PPG (sem ECG — menor segurança clínica)."
+        )
+    else:
+        msg = "Frequência cardíaca ok. Pressão ainda sem calibração suficiente (faça ≥ 5 calibrações)."
 
     # PDF + envios opcionais
     pdf_info = None
@@ -447,6 +500,8 @@ def api_measure():
         "heart_rate": features.get("heart_rate"),
         "estimated_systolic": sbp,
         "estimated_diastolic": dbp,
+        "sbp_std": final_sbp_std,
+        "dbp_std": final_dbp_std,
         "signal_quality": features.get("signal_quality"),
         "condition": condition,
         "feeding": feeding,
@@ -455,6 +510,8 @@ def api_measure():
         "pulse_height": pulse_height,
         "observation": observation,
         "status": status,
+        "ecg_validation": features["ecg_validation"],
+        "bp_confidence": bp_confidence,
     }
 
     try:
@@ -469,7 +526,8 @@ def api_measure():
                     f"Olá {user_name},\n\n"
                     f"Segue o relatório da sua medição PPG.\n"
                     f"FC: {features.get('heart_rate')} bpm\n"
-                    f"PA estimada: {sbp or 'N/A'}/{dbp or 'N/A'} mmHg\n\n"
+                    f"PA estimada: {sbp or 'N/A'}/{dbp or 'N/A'} mmHg\n"
+                    f"Confiança: {bp_confidence.get('label')}\n\n"
                     "Este é um sistema experimental. Não use para diagnóstico clínico."
                 ),
                 pdf_bytes=pdf_bytes,
@@ -483,6 +541,7 @@ def api_measure():
                     f"CardiaSync — Medição de {user_name}\n"
                     f"FC: {features.get('heart_rate')} bpm\n"
                     f"PA: {sbp or 'N/A'}/{dbp or 'N/A'} mmHg\n"
+                    f"Segurança: {bp_confidence.get('label')}\n"
                     f"Qualidade: {int((features.get('signal_quality') or 0)*100)}%\n"
                     "⚠️ Sistema experimental — não use para diagnóstico."
                 ),
@@ -497,10 +556,11 @@ def api_measure():
         "heart_rate": features.get("heart_rate"),
         "estimated_systolic": sbp,
         "estimated_diastolic": dbp,
-        "sbp_std": sbp_std,
-        "dbp_std": dbp_std,
+        "sbp_std": final_sbp_std,
+        "dbp_std": final_dbp_std,
         "signal_quality": features.get("signal_quality"),
         "variability": variability,
+        "bp_confidence": bp_confidence,
         "status": status,
         "model_scope": (coeffs or {}).get("scope") if coeffs else None,
         "model_type": (coeffs or {}).get("model_type") if coeffs else None,
@@ -567,10 +627,18 @@ def api_calibrate():
         ecg_rr_ms=data.get("ecg_rr_ms"),
         ecg_peaks_sec=data.get("ecg_peaks_sec"),
     )
+    bp_confidence = assess_bp_confidence(
+        ecg_status=variability.get("ecg_status", "missing"),
+        comparison=variability.get("comparison"),
+    )
+
     features["hrv"] = variability.get("prv")
     features["ecg_validation"] = {
         "ecg_provided": variability.get("ecg_provided"),
+        "ecg_status": variability.get("ecg_status"),
+        "hrv_ecg": variability.get("hrv_ecg"),
         "comparison": variability.get("comparison"),
+        "bp_confidence": bp_confidence,
     }
 
     user = get_or_create_user(
@@ -621,6 +689,8 @@ def api_calibrate():
             }
 
     msg = f"Calibração salva. Total pessoal: {total}."
+    if variability.get("ecg_provided"):
+        msg += " Validação por ECG registrada."
     if trained:
         msg += (
             f" Modelo pessoal atualizado "
@@ -639,6 +709,9 @@ def api_calibrate():
         "calibration_id": calibration.id,
         "total_calibrations": total,
         "model_trained": trained,
+        "ecg_validated": bool(variability.get("ecg_provided")),
+        "variability": variability,
+        "bp_confidence": bp_confidence,
         "model_info": {
             "r2_systolic": coeffs.get("r2_systolic") if coeffs else None,
             "r2_diastolic": coeffs.get("r2_diastolic") if coeffs else None,
@@ -657,12 +730,18 @@ def api_calibrate():
 @app.route("/api/measurement/<int:mid>/pdf")
 def measurement_pdf(mid):
     m = Measurement.query.get_or_404(mid)
+    feats = _parse_features_safe(m.features_json)
+    ecg_val = feats.get("ecg_validation") or {}
+    bp_conf = ecg_val.get("bp_confidence") or {}
+
     data = {
         "user_name": m.user.name if m.user else "—",
         "created_at": m.created_at.strftime("%d/%m/%Y %H:%M:%S") if m.created_at else None,
         "heart_rate": m.heart_rate,
         "estimated_systolic": m.estimated_systolic,
         "estimated_diastolic": m.estimated_diastolic,
+        "sbp_std": m.sbp_std,
+        "dbp_std": m.dbp_std,
         "signal_quality": m.signal_quality,
         "condition": m.condition,
         "feeding": m.feeding,
@@ -671,6 +750,8 @@ def measurement_pdf(mid):
         "pulse_height": m.pulse_height,
         "observation": m.observation,
         "status": "calibrado" if m.estimated_systolic else "sem_calibracao",
+        "ecg_validation": ecg_val,
+        "bp_confidence": bp_conf,
     }
     pdf_bytes = build_measurement_pdf(data)
     return send_file(
@@ -696,12 +777,18 @@ def api_send_report():
     if not m:
         return jsonify({"ok": False, "error": "Medição não encontrada"}), 404
 
+    feats = _parse_features_safe(m.features_json)
+    ecg_val = feats.get("ecg_validation") or {}
+    bp_conf = ecg_val.get("bp_confidence") or {}
+
     pdf_data = {
         "user_name": m.user.name if m.user else "—",
         "created_at": m.created_at.strftime("%d/%m/%Y %H:%M:%S") if m.created_at else None,
         "heart_rate": m.heart_rate,
         "estimated_systolic": m.estimated_systolic,
         "estimated_diastolic": m.estimated_diastolic,
+        "sbp_std": m.sbp_std,
+        "dbp_std": m.dbp_std,
         "signal_quality": m.signal_quality,
         "condition": m.condition,
         "feeding": m.feeding,
@@ -710,6 +797,8 @@ def api_send_report():
         "pulse_height": m.pulse_height,
         "observation": m.observation,
         "status": "calibrado" if m.estimated_systolic else "sem_calibracao",
+        "ecg_validation": ecg_val,
+        "bp_confidence": bp_conf,
     }
     pdf_bytes = build_measurement_pdf(pdf_data)
 

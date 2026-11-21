@@ -1,6 +1,6 @@
 /**
  * CardiaSync — Fluxo de Calibração
- * Passo 1: valores do aparelho → Passo 2: captura câmera → Passo 3: resultado
+ * Passo 1: valores do aparelho + ECG opcional → Passo 2: captura câmera → Passo 3: resultado
  */
 
 (() => {
@@ -26,6 +26,14 @@
   const errorBox = document.getElementById("errorBoxCal");
   const errorText = document.getElementById("errorTextCal");
 
+  // Controles opcionais de ECG
+  const ecgFileInput = document.getElementById("ecgFileInputCal");
+  const ecgRawInput = document.getElementById("ecgRawInputCal");
+  const ecgFormatSelect = document.getElementById("ecgFormatSelectCal");
+  const ecgPreviewInfo = document.getElementById("ecgPreviewInfoCal");
+  const ecgStatusBadge = document.getElementById("ecgStatusBadgeCal");
+  const clearEcgBtn = document.getElementById("clearEcgBtnCal");
+
   let stream = null;
   let capturing = false;
   let redSignal = [];
@@ -43,6 +51,92 @@
   function hideError() {
     errorBox.hidden = true;
   }
+
+  function parseEcgInput(rawText, mode = "auto") {
+    if (!rawText || !rawText.trim()) return null;
+
+    const values = rawText
+      .split(/[\s,;|\t\r\n]+/)
+      .map((t) => t.trim())
+      .filter((t) => t !== "" && !isNaN(Number(t)))
+      .map(Number)
+      .filter((n) => isFinite(n) && n >= 0);
+
+    if (values.length < 3) {
+      return { error: "Insira pelo menos 3 batimentos/picos válidos de ECG." };
+    }
+
+    let detected = mode;
+    if (mode === "auto") {
+      const strictlyIncreasing = values.every((v, i) => i === 0 || v > values[i - 1]);
+      const median = [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+      detected = strictlyIncreasing && median < 250 ? "peaks_sec" : "rr_ms";
+    }
+
+    if (detected === "rr_ms") {
+      const validRR = values.filter((v) => v >= 300 && v <= 2000);
+      if (validRR.length < 3) {
+        return { error: "Intervalos RR fora da faixa fisiológica (300–2000 ms)." };
+      }
+      const meanRR = validRR.reduce((a, b) => a + b, 0) / validRR.length;
+      return {
+        field: "ecg_rr_ms",
+        data: validRR,
+        summary: `${validRR.length} intervalos RR (~${Math.round(60000 / meanRR)} bpm)`,
+      };
+    }
+
+    if (!values.every((v, i) => i === 0 || v > values[i - 1])) {
+      return { error: "Tempos de pico R (s) devem estar em ordem crescente." };
+    }
+    return {
+      field: "ecg_peaks_sec",
+      data: values,
+      summary: `${values.length} picos R (${values[values.length - 1].toFixed(1)}s)`,
+    };
+  }
+
+  function updateEcgPreview() {
+    if (!ecgRawInput) return;
+    const parsed = parseEcgInput(ecgRawInput.value, ecgFormatSelect?.value || "auto");
+    if (!parsed) {
+      ecgPreviewInfo.textContent = "Nenhum dado de ECG carregado.";
+      ecgStatusBadge.textContent = "Sem ECG";
+      ecgStatusBadge.className = "badge medium";
+      clearEcgBtn.hidden = true;
+      return;
+    }
+    if (parsed.error) {
+      ecgPreviewInfo.textContent = `⚠️ ${parsed.error}`;
+      ecgStatusBadge.textContent = "ECG Inválido";
+      ecgStatusBadge.className = "badge bad";
+      clearEcgBtn.hidden = false;
+      return;
+    }
+    ecgPreviewInfo.textContent = `✅ ${parsed.summary}`;
+    ecgStatusBadge.textContent = "ECG Pronto";
+    ecgStatusBadge.className = "badge good";
+    clearEcgBtn.hidden = false;
+  }
+
+  ecgFileInput?.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      ecgRawInput.value = e.target.result || "";
+      updateEcgPreview();
+    };
+    reader.readAsText(file);
+  });
+
+  ecgRawInput?.addEventListener("input", updateEcgPreview);
+  ecgFormatSelect?.addEventListener("change", updateEcgPreview);
+  clearEcgBtn?.addEventListener("click", () => {
+    ecgRawInput.value = "";
+    if (ecgFileInput) ecgFileInput.value = "";
+    updateEcgPreview();
+  });
 
   function setStep(n) {
     [step1, step2, step3].forEach((el, i) => {
@@ -67,6 +161,12 @@
     }
     if (d >= s) {
       showError("A diastólica deve ser menor que a sistólica.");
+      return;
+    }
+
+    const parsedEcg = parseEcgInput(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto");
+    if (parsedEcg && parsedEcg.error) {
+      showError("Corrija ou limpe o campo de ECG antes de continuar: " + parsedEcg.error);
       return;
     }
 
@@ -220,6 +320,11 @@
       skin_tone: document.getElementById("skinCal")?.value || null,
     };
 
+    const parsedEcg = parseEcgInput(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto");
+    if (parsedEcg && !parsedEcg.error) {
+      payload[parsedEcg.field] = parsedEcg.data;
+    }
+
     try {
       cameraStatus.textContent = "Salvando calibração…";
       const res = await fetch("/api/calibrate", {
@@ -234,7 +339,17 @@
         return;
       }
 
-      // Resultado
+      const ecgBadgeRes = document.getElementById("resEcgBadgeCal");
+      if (ecgBadgeRes) {
+        if (data.ecg_validated) {
+          ecgBadgeRes.textContent = "⚡ Validado por ECG";
+          ecgBadgeRes.className = "badge good";
+        } else {
+          ecgBadgeRes.textContent = "Sem ECG (Apenas PPG)";
+          ecgBadgeRes.className = "badge medium";
+        }
+      }
+
       let msg = data.message || "";
       if (data.model_trained) {
         msg += " ✅ Modelo de regressão linear atualizado automaticamente.";
@@ -249,7 +364,6 @@
 
       setStep(3);
 
-      // Para o stream
       if (stream) stream.getTracks().forEach((t) => t.stop());
     } catch (err) {
       console.error(err);

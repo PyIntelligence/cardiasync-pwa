@@ -1,6 +1,6 @@
 /**
  * CardiaSync — Tela de Medição
- * Preview ao vivo + overlay de guia + qualidade de sinal + contador
+ * Preview ao vivo + overlay de guia + qualidade de sinal + ECG opcional (.csv/.txt) + contador
  */
 
 (() => {
@@ -19,6 +19,14 @@
   const resultBox = document.getElementById("resultBox");
   const errorBox = document.getElementById("errorBox");
   const errorText = document.getElementById("errorText");
+
+  // Controles opcionais de ECG
+  const ecgFileInput = document.getElementById("ecgFileInput");
+  const ecgRawInput = document.getElementById("ecgRawInput");
+  const ecgFormatSelect = document.getElementById("ecgFormatSelect");
+  const ecgPreviewInfo = document.getElementById("ecgPreviewInfo");
+  const ecgStatusBadge = document.getElementById("ecgStatusBadge");
+  const clearEcgBtn = document.getElementById("clearEcgBtn");
 
   let stream = null;
   let capturing = false;
@@ -41,6 +49,93 @@
     return window.isSecureContext || location.hostname === "localhost" || location.hostname === "127.0.0.1";
   }
 
+  // ─── Parser de ECG (.csv / .txt ou texto colado) ───
+  function parseEcgInput(rawText, mode = "auto") {
+    if (!rawText || !rawText.trim()) return null;
+
+    const values = rawText
+      .split(/[\s,;|\t\r\n]+/)
+      .map((t) => t.trim())
+      .filter((t) => t !== "" && !isNaN(Number(t)))
+      .map(Number)
+      .filter((n) => isFinite(n) && n >= 0);
+
+    if (values.length < 3) {
+      return { error: "Insira pelo menos 3 batimentos/picos válidos de ECG." };
+    }
+
+    let detected = mode;
+    if (mode === "auto") {
+      const strictlyIncreasing = values.every((v, i) => i === 0 || v > values[i - 1]);
+      const median = [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+      detected = strictlyIncreasing && median < 250 ? "peaks_sec" : "rr_ms";
+    }
+
+    if (detected === "rr_ms") {
+      const validRR = values.filter((v) => v >= 300 && v <= 2000);
+      if (validRR.length < 3) {
+        return { error: "Intervalos RR fora da faixa fisiológica (300–2000 ms)." };
+      }
+      const meanRR = validRR.reduce((a, b) => a + b, 0) / validRR.length;
+      return {
+        field: "ecg_rr_ms",
+        data: validRR,
+        summary: `${validRR.length} intervalos RR (~${Math.round(60000 / meanRR)} bpm)`,
+      };
+    }
+
+    if (!values.every((v, i) => i === 0 || v > values[i - 1])) {
+      return { error: "Tempos de pico R (s) devem estar em ordem crescente." };
+    }
+    return {
+      field: "ecg_peaks_sec",
+      data: values,
+      summary: `${values.length} picos R (${values[values.length - 1].toFixed(1)}s)`,
+    };
+  }
+
+  function updateEcgPreview() {
+    if (!ecgRawInput) return;
+    const parsed = parseEcgInput(ecgRawInput.value, ecgFormatSelect?.value || "auto");
+    if (!parsed) {
+      ecgPreviewInfo.textContent = "Nenhum dado de ECG carregado.";
+      ecgStatusBadge.textContent = "Sem ECG";
+      ecgStatusBadge.className = "badge medium";
+      clearEcgBtn.hidden = true;
+      return;
+    }
+    if (parsed.error) {
+      ecgPreviewInfo.textContent = `⚠️ ${parsed.error}`;
+      ecgStatusBadge.textContent = "ECG Inválido";
+      ecgStatusBadge.className = "badge bad";
+      clearEcgBtn.hidden = false;
+      return;
+    }
+    ecgPreviewInfo.textContent = `✅ ${parsed.summary}`;
+    ecgStatusBadge.textContent = "ECG Pronto";
+    ecgStatusBadge.className = "badge good";
+    clearEcgBtn.hidden = false;
+  }
+
+  ecgFileInput?.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      ecgRawInput.value = e.target.result || "";
+      updateEcgPreview();
+    };
+    reader.readAsText(file);
+  });
+
+  ecgRawInput?.addEventListener("input", updateEcgPreview);
+  ecgFormatSelect?.addEventListener("change", updateEcgPreview);
+  clearEcgBtn?.addEventListener("click", () => {
+    ecgRawInput.value = "";
+    if (ecgFileInput) ecgFileInput.value = "";
+    updateEcgPreview();
+  });
+
   // ─── Inicializar câmera ───
   async function initCamera() {
     hideError();
@@ -60,7 +155,6 @@
     }
 
     try {
-      // Preferência: câmera traseira
       const constraints = {
         audio: false,
         video: {
@@ -75,7 +169,6 @@
       video.srcObject = stream;
       await video.play();
 
-      // Tentar ligar o flash/torch (nem todos os dispositivos permitem)
       const track = stream.getVideoTracks()[0];
       const capabilities = track.getCapabilities?.() || {};
       if (capabilities.torch) {
@@ -89,7 +182,6 @@
         cameraStatus.textContent = "Câmera ativa";
       }
 
-      // Ajusta canvas
       overlay.width = video.videoWidth || 640;
       overlay.height = video.videoHeight || 480;
 
@@ -118,10 +210,8 @@
         return;
       }
 
-      // Desenha frame no canvas (para análise)
       ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
 
-      // Região central (onde o dedo deve estar)
       const cx = Math.floor(overlay.width / 2);
       const cy = Math.floor(overlay.height / 2);
       const size = Math.min(80, Math.floor(overlay.width * 0.2));
@@ -139,10 +229,8 @@
       const meanG = sumG / pixels;
       const meanB = sumB / pixels;
 
-      // Heurística melhorada de “dedo presente”
       const isRedDominant = meanR > meanG + 12 && meanR > meanB + 12;
       const isDarkEnough = meanR < 195 && meanR > 20;
-      // Uniformidade: desvio entre canais não deve ser extremo demais
       const channelSpread = Math.max(meanR, meanG, meanB) - Math.min(meanR, meanG, meanB);
       const uniformEnough = channelSpread < 90;
       const fingerLikely = isRedDominant && isDarkEnough && uniformEnough;
@@ -164,7 +252,6 @@
         cameraStatus.textContent = "Aguardando posicionamento do dedo";
       }
 
-      // Se estiver capturando, acumula o canal vermelho médio
       if (capturing) {
         redSignal.push(meanR);
       }
@@ -196,7 +283,6 @@
       countdownEl.textContent = remaining.toFixed(0);
       progressFill.style.width = pct + "%";
 
-      // Qualidade aproximada durante a captura
       if (redSignal.length > 10) {
         const recent = redSignal.slice(-30);
         const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
@@ -237,7 +323,6 @@
       return;
     }
 
-    // Envia para o backend
     const payload = {
       red_signal: redSignal,
       fps: TARGET_FPS,
@@ -254,6 +339,11 @@
       send_whatsapp: !!document.getElementById("sendWhatsapp")?.checked,
     };
 
+    const parsedEcg = parseEcgInput(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto");
+    if (parsedEcg && !parsedEcg.error) {
+      payload[parsedEcg.field] = parsedEcg.data;
+    }
+
     try {
       cameraStatus.textContent = "Processando…";
       const res = await fetch("/api/measure", {
@@ -268,11 +358,19 @@
         return;
       }
 
-      // Mostra resultado
+      // Selo de confiança clínica
+      const conf = data.bp_confidence || {};
+      const confBadge = document.getElementById("resConfidenceBadge");
+      if (confBadge) {
+        confBadge.textContent = conf.label || "Sem ECG — Precisão Reduzida";
+        confBadge.className = "badge " + (conf.badge_class || "medium");
+      }
+
       document.getElementById("resHR").textContent = data.heart_rate ?? "—";
       if (data.estimated_systolic && data.estimated_diastolic) {
+        const margin = data.sbp_std ? ` (±${Math.round(data.sbp_std)})` : "";
         document.getElementById("resBP").textContent =
-          `${data.estimated_systolic}/${data.estimated_diastolic}`;
+          `${data.estimated_systolic}/${data.estimated_diastolic}${margin}`;
       } else {
         document.getElementById("resBP").textContent = "N/A";
       }
@@ -298,12 +396,17 @@
       if (elEcg) {
         if (data.variability && data.variability.ecg_provided) {
           const cmp = data.variability.comparison || {};
+          const hrvEcg = data.variability.hrv_ecg || {};
+          elEcg.style.color = conf.level === "high" ? "#4ade80" : "#fbbf24";
           elEcg.textContent =
-            (cmp.message || "Comparação com ECG") +
+            `ECG Referência: RMSSD ${hrvEcg.rmssd_ms ?? "—"} ms · SDNN ${hrvEcg.sdnn_ms ?? "—"} ms` +
             (cmp.delta_rmssd_ms != null ? ` · ΔRMSSD ${cmp.delta_rmssd_ms} ms` : "") +
-            (cmp.delta_mean_hr_bpm != null ? ` · ΔFC ${cmp.delta_mean_hr_bpm} bpm` : "");
+            (cmp.delta_mean_hr_bpm != null ? ` · ΔFC ${cmp.delta_mean_hr_bpm} bpm` : "") +
+            (conf.warning ? ` — ⚠️ ${conf.warning}` : "");
         } else {
-          elEcg.textContent = "Sem ECG — validação por eletrocardiograma omitida (modo normal).";
+          elEcg.style.color = "#fbbf24";
+          elEcg.textContent =
+            conf.warning || "Sem ECG — pressão calculada apenas via câmera (menor segurança clínica).";
         }
       }
 

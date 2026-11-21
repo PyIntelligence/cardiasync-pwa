@@ -74,6 +74,51 @@
         </select>
       </div>
 
+      <!-- ECG Profissional Opcional na Calibração -->
+      <details class="form-row" id="ecgPanelCal" style="border:1px solid var(--border);border-radius:12px;padding:0.85rem;background:rgba(15,23,42,0.55);">
+        <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-weight:600;font-size:0.92rem;">
+          <span>⚡ Validação por ECG (Opcional)</span>
+          <span class="badge medium" id="ecgStatusBadgeCal">Sem ECG</span>
+        </summary>
+
+        <div style="margin-top:0.8rem;">
+          <p class="hint" style="margin-bottom:0.7rem;font-size:0.84rem;">
+            Anexe intervalos RR ou picos R (.csv ou .txt) para registrar esta calibração com validação elétrica padrão-ouro.
+            Se omitir, a calibração continua normalmente apenas com PPG.
+          </p>
+
+          <div class="form-row two-cols" style="align-items:end;margin-bottom:0.65rem;">
+            <div>
+              <label for="ecgFormatSelectCal">Formato dos dados</label>
+              <select id="ecgFormatSelectCal">
+                <option value="auto">Detectar automaticamente</option>
+                <option value="rr_ms">Intervalos RR (ms)</option>
+                <option value="peaks_sec">Tempos de Pico R (s)</option>
+              </select>
+            </div>
+            <div>
+              <label for="ecgFileInputCal" class="btn btn-secondary" style="margin-top:0;padding:0.7rem 0.9rem;font-size:0.9rem;cursor:pointer;">
+                📂 Carregar .CSV / .TXT
+              </label>
+              <input type="file" id="ecgFileInputCal" accept=".csv,.txt,text/csv,text/plain" hidden />
+            </div>
+          </div>
+
+          <div class="form-row" style="margin-bottom:0.5rem;">
+            <textarea
+              id="ecgRawInputCal"
+              rows="3"
+              placeholder="Cole os intervalos RR em ms (ex: 820, 815, 830, 810) ou tempos dos picos R em segundos..."
+            ></textarea>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--muted);">
+            <span id="ecgPreviewInfoCal">Nenhum dado de ECG carregado.</span>
+            <button type="button" id="clearEcgBtnCal" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.25rem 0.65rem;font-size:0.78rem;" hidden>Limpar</button>
+          </div>
+        </div>
+      </details>
+
       <button id="btnGoToCamera" class="btn btn-primary btn-lg">
         Continuar para Captura da Câmera →
       </button>
@@ -109,7 +154,10 @@
     <!-- Passo 3: Resultado -->
     <div id="panelStep3" hidden>
       <div class="result-box" id="resultBoxCal">
-        <h3>Calibração salva</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+          <h3 style="margin-bottom:0;">Calibração salva</h3>
+          <span class="badge medium" id="resEcgBadgeCal">Sem ECG</span>
+        </div>
         <p id="calMsg"></p>
         <div class="result-grid">
           <div class="result-item">
@@ -126,7 +174,7 @@
           </div>
         </div>
         <a href="{{ url_for('calibrate_page') }}" class="btn btn-secondary">Nova calibração</a>
-        <a href="{{ url_for('measure_page') }}" class="btn btn-primary">Ir para Medir</a>
+        <a href="{{ url_for('measure_page') }}" class="btn btn-primary" style="margin-top:0.5rem;">Ir para Medir</a>
       </div>
     </div>
 
