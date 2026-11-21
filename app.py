@@ -6,6 +6,7 @@ from flask import (
 )
 from dotenv import load_dotenv
 from io import BytesIO
+from sqlalchemy import text
 
 from models import db, User, Calibration, Measurement, CalibrationModel
 from calibration_engine import (
@@ -43,12 +44,94 @@ if uri and uri.startswith("postgres://"):
 db.init_app(app)
 
 
+def _ensure_schema():
+    """
+    create_all só cria tabelas novas — não adiciona colunas.
+    No Neon/Render, deploys anteriores deixam o schema desatualizado
+    e /historico quebra ao fazer SELECT em colunas inexistentes.
+    """
+    db.create_all()
+
+    # colunas que podem faltar em bancos antigos
+    alterations = [
+        ("users", "age", "INTEGER"),
+        ("users", "sex", "VARCHAR(20)"),
+        ("users", "skin_tone", "VARCHAR(30)"),
+        ("calibrations", "age", "INTEGER"),
+        ("calibrations", "sex", "VARCHAR(20)"),
+        ("calibrations", "skin_tone", "VARCHAR(30)"),
+        ("calibrations", "notes", "TEXT"),
+        ("calibrations", "features_json", "TEXT"),
+        ("calibrations", "peak_amplitude", "FLOAT"),
+        ("calibrations", "pulse_width", "FLOAT"),
+        ("calibrations", "mean_red", "FLOAT"),
+        ("calibrations", "std_red", "FLOAT"),
+        ("calibrations", "signal_quality", "FLOAT"),
+        ("calibrations", "heart_rate", "FLOAT"),
+        ("calibrations", "condition", "VARCHAR(30)"),
+        ("measurements", "sbp_std", "FLOAT"),
+        ("measurements", "dbp_std", "FLOAT"),
+        ("measurements", "features_json", "TEXT"),
+        ("measurements", "mean_red", "FLOAT"),
+        ("measurements", "std_red", "FLOAT"),
+        ("measurements", "feeding", "VARCHAR(20)"),
+        ("measurements", "position", "VARCHAR(20)"),
+        ("measurements", "arm", "VARCHAR(20)"),
+        ("measurements", "pulse_height", "VARCHAR(20)"),
+        ("measurements", "period", "VARCHAR(20)"),
+        ("measurements", "observation", "TEXT"),
+        ("measurements", "condition", "VARCHAR(30)"),
+        ("measurements", "calibration_id", "INTEGER"),
+        ("calibration_models", "scope", "VARCHAR(20)"),
+        ("calibration_models", "degree", "INTEGER"),
+        ("calibration_models", "residual_std_sbp", "FLOAT"),
+        ("calibration_models", "residual_std_dbp", "FLOAT"),
+        ("calibration_models", "bias_report_json", "TEXT"),
+        ("calibration_models", "coefficients_json", "TEXT"),
+        ("calibration_models", "intercept_systolic", "FLOAT"),
+        ("calibration_models", "intercept_diastolic", "FLOAT"),
+        ("calibration_models", "r2_score", "FLOAT"),
+        ("calibration_models", "n_samples", "INTEGER"),
+        ("calibration_models", "is_active", "BOOLEAN"),
+        ("calibration_models", "model_type", "VARCHAR(50)"),
+        ("calibration_models", "updated_at", "TIMESTAMP"),
+    ]
+
+    uri = app.config.get("SQLALCHEMY_DATABASE_URI") or ""
+    is_pg = uri.startswith("postgresql") or uri.startswith("postgres")
+
+    with db.engine.begin() as conn:
+        for table, column, coltype in alterations:
+            try:
+                if is_pg:
+                    conn.execute(
+                        text(
+                            f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{column}" {coltype}'
+                        )
+                    )
+                else:
+                    # SQLite: verifica colunas existentes
+                    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                    existing = {r[1] for r in rows}
+                    if column not in existing:
+                        conn.execute(
+                            text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+                        )
+            except Exception:
+                # tabela ainda não existe ou coluna já presente — ignore
+                pass
+
+
 @app.before_request
 def create_tables():
-    if not hasattr(app, "_tables_created"):
+    if not getattr(app, "_schema_ready", False):
         with app.app_context():
-            db.create_all()
-        app._tables_created = True
+            try:
+                _ensure_schema()
+            except Exception as e:
+                # não derruba o app inteiro; loga e segue
+                app.logger.exception("Schema ensure failed: %s", e)
+        app._schema_ready = True
 
 
 def get_or_create_user(
@@ -239,14 +322,33 @@ def calibrate_page():
 
 @app.route("/historico")
 def historico():
-    measurements = (
-        Measurement.query.order_by(Measurement.created_at.desc()).limit(100).all()
-    )
-    calibrations = (
-        Calibration.query.order_by(Calibration.created_at.desc()).limit(50).all()
-    )
+    measurements = []
+    calibrations = []
+    error_msg = None
+    try:
+        measurements = (
+            Measurement.query.order_by(Measurement.created_at.desc()).limit(100).all()
+        )
+        calibrations = (
+            Calibration.query.order_by(Calibration.created_at.desc()).limit(50).all()
+        )
+    except Exception as e:
+        # Schema desatualizado / conexão — mostra página vazia em vez de 500
+        app.logger.exception("Erro ao carregar histórico: %s", e)
+        error_msg = (
+            "Não foi possível ler o banco ainda. "
+            "Se acabou de fazer deploy, recarregue em alguns segundos. "
+            "Se persistir, confira DATABASE_URL no Render."
+        )
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
     return render_template(
-        "historico.html", measurements=measurements, calibrations=calibrations
+        "historico.html",
+        measurements=measurements,
+        calibrations=calibrations,
+        error_msg=error_msg,
     )
 
 

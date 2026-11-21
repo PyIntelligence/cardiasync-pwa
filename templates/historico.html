@@ -3,6 +3,11 @@
 
 {% block content %}
 <section>
+  {% if error_msg %}
+  <div class="error-box" style="margin-bottom:1rem;">
+    <p>{{ error_msg }}</p>
+  </div>
+  {% endif %}
   <h2>Histórico de Medições</h2>
   <div class="table-wrapper">
     <table class="data-table">
