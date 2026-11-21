@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0f172a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="CardiaSync" />
   <meta name="description" content="CardiaSync PWA — Monitoramento experimental de PPG por câmera" />
   <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
   <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}" />
@@ -44,6 +48,34 @@
     <p>CardiaSync PWA © 2026 — Sistema experimental de PPG</p>
     <p class="disclaimer">⚠️ Não é um dispositivo médico. As medições são estimativas experimentais e não devem ser usadas para diagnóstico ou tratamento.</p>
   </footer>
+
+
+  <!-- Banner de instalação PWA (primeira visita) -->
+  <div id="installBanner" class="install-banner" hidden>
+    <div class="install-banner-inner">
+      <div class="install-banner-top">
+        <img class="install-banner-icon" src="{{ url_for('static', filename='icons/icon-192.png') }}" alt="CardiaSync" />
+        <div class="install-banner-text">
+          <strong>Instalar CardiaSync</strong>
+          <span>Adicione à tela inicial para abrir como app e usar a câmera com mais facilidade.</span>
+        </div>
+      </div>
+      <p id="installIosHint" class="install-hint" hidden>
+        No iPhone/iPad: toque em <kbd>Compartilhar</kbd> e depois em
+        <kbd>Adicionar à Tela de Início</kbd>.
+      </p>
+      <p id="installAndroidHint" class="install-hint" hidden>
+        No Android: toque em <strong>Instalar</strong> ou use o menu do navegador
+        → <kbd>Instalar app</kbd> / <kbd>Adicionar à tela inicial</kbd>.
+      </p>
+      <div class="install-banner-actions">
+        <button type="button" id="btnInstallApp" class="btn btn-primary">Instalar app</button>
+        <button type="button" id="btnInstallLater" class="btn btn-secondary">Agora não</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/install.js') }}" defer></script>
 
   {% block scripts %}{% endblock %}
 </body>

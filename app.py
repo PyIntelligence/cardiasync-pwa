@@ -879,6 +879,16 @@ def vies_page():
     return render_template("vies.html")
 
 
+@app.route("/sw.js")
+def service_worker():
+    """Service worker na raiz — exigido para escopo PWA / instalação."""
+    response = app.send_static_file("sw.js")
+    response.headers["Content-Type"] = "application/javascript; charset=utf-8"
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.now(timezone.utc).isoformat()})
