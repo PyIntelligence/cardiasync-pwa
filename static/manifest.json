@@ -1,18 +1,43 @@
 {
-  "name": "CardiaSync PWA",
+  "name": "CardiaSync — Cardiologia Sincronizada",
   "short_name": "CardiaSync",
-  "description": "Monitoramento experimental de PPG e estimativa de pressão arterial por câmera",
+  "description": "Monitoramento experimental de PPG, HRV/PRV e estimativa de pressão arterial por câmera",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0b1220",
   "theme_color": "#0f172a",
   "orientation": "portrait",
   "icons": [
     {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/icons/icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
       "src": "/static/icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }
