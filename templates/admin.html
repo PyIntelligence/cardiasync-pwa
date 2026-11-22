@@ -7,6 +7,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}" />
   <title>Painel do Administrador — CardiaSync</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="{{ url_for('static', filename='js/auth_guard.js') }}"></script>
   <style>
     .adm-wrap {
       max-width: 680px;
@@ -18,7 +19,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 0.75rem;
-      margin-bottom: 1.25rem;
+      margin-bottom: 1.15rem;
       flex-wrap: wrap;
     }
     .adm-top h1 {
@@ -44,6 +45,28 @@
       color: var(--text);
       font-size: 0.96rem;
     }
+    .phone-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: stretch;
+    }
+    .phone-row input {
+      flex: 1;
+    }
+    .btn-contacts {
+      padding: 0 0.85rem;
+      border-radius: 10px;
+      border: 1px solid rgba(96, 165, 250, 0.45);
+      background: rgba(59, 130, 246, 0.16);
+      color: #93c5fd;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-contacts:hover {
+      background: rgba(59, 130, 246, 0.28);
+    }
     .btn-primary-adm {
       width: 100%;
       padding: 0.82rem 1rem;
@@ -57,33 +80,37 @@
     }
     .btn-primary-adm:hover { background: var(--primary-hover); }
     .btn-wa {
-      padding: 0.55rem 0.85rem;
+      padding: 0.6rem 0.9rem;
       border: none;
       border-radius: 9px;
       background: #16a34a;
       color: #fff;
-      font-size: 0.84rem;
+      font-size: 0.85rem;
       font-weight: 700;
       cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
     }
     .btn-wa:hover { background: #15803d; }
     .btn-sm {
-      padding: 0.45rem 0.75rem;
+      padding: 0.52rem 0.8rem;
       border-radius: 8px;
       border: 1px solid var(--border);
       background: #0f172a;
       color: #e2e8f0;
-      font-size: 0.8rem;
+      font-size: 0.82rem;
       font-weight: 600;
       cursor: pointer;
     }
     .btn-danger-sm {
-      padding: 0.45rem 0.75rem;
+      padding: 0.52rem 0.8rem;
       border-radius: 8px;
       border: 1px solid rgba(239, 68, 68, 0.45);
       background: rgba(239, 68, 68, 0.14);
       color: #fca5a5;
-      font-size: 0.8rem;
+      font-size: 0.82rem;
       font-weight: 600;
       cursor: pointer;
     }
@@ -142,6 +169,18 @@
       border: 1px solid rgba(239, 68, 68, 0.45);
       color: #fecaca;
     }
+    .self-device-bar {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+      margin-bottom: 1.1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
@@ -198,6 +237,17 @@
       </section>
       {% endif %}
     {% else %}
+      <!-- ATALHO PARA O PRÓPRIO ADMIN LIBERAR O CELULAR DELE -->
+      <div class="self-device-bar" id="selfDeviceBar" style="display:none;">
+        <div style="font-size:0.84rem;color:#dbeafe;">
+          <strong>📱 Este celular ainda não está liberado para medir:</strong><br/>
+          <span style="color:var(--muted);font-size:0.78rem;">Vincule seu aparelho com 1 clique sem gastar um convite.</span>
+        </div>
+        <button type="button" id="btnLinkMyPhone" class="btn-sm" style="border-color:#60a5fa;color:#93c5fd;">
+          ✅ Liberar Meu Celular
+        </button>
+      </div>
+
       <!-- PAINEL ADMINISTRATIVO AUTENTICADO -->
       <section class="card" style="margin-bottom:1.25rem;">
         <h2 style="font-size:1.15rem;margin-bottom:0.35rem;">🎟️ Gerar Novo Convite de Uso Único</h2>
@@ -207,9 +257,23 @@
 
         <form id="formCreateInvite">
           <div class="adm-field">
-            <label for="invRecipient">Para quem é este convite? (opcional)</label>
+            <label for="invRecipient">Nome do Convidado (opcional)</label>
             <input type="text" id="invRecipient" placeholder="Ex.: Dr. Milton" />
           </div>
+
+          <div class="adm-field">
+            <label for="invPhone">Celular / WhatsApp do Convidado (com DDD — opcional)</label>
+            <div class="phone-row">
+              <input type="tel" id="invPhone" inputmode="tel" placeholder="Ex.: (83) 99999-9999" />
+              <button type="button" id="btnPickContact" class="btn-contacts" title="Buscar na agenda do celular">
+                📒 Agenda
+              </button>
+            </div>
+            <div id="contactHint" style="font-size:0.76rem;color:var(--muted);margin-top:0.3rem;">
+              💡 Se deixar o número em branco, o botão do WhatsApp abrirá sua <strong>lista de contatos do WhatsApp</strong> para você escolher para quem enviar.
+            </div>
+          </div>
+
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
             <div class="adm-field">
               <label for="invCustomCode">Código (opcional)</label>
@@ -230,25 +294,28 @@
 
         <!-- RESULTADO DO CONVITE RECÉM-CRIADO -->
         <div id="newInviteBox" style="display:none;margin-top:1rem;padding:1rem;background:#0f172a;border:1px dashed #22c55e;border-radius:12px;">
-          <div style="font-size:0.82rem;color:#86efac;font-weight:600;">✅ Convite de Uso Único Pronto!</div>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin:0.5rem 0;flex-wrap:wrap;">
+          <div style="font-size:0.84rem;color:#86efac;font-weight:700;">✅ Convite de Uso Único Criado!</div>
+          <div style="margin:0.45rem 0 0.65rem;">
             <span class="code-mono" id="createdCodeText">CS-0000</span>
-            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-              <button type="button" id="btnCopyCreatedWA" class="btn-wa">📲 Copiar Mensagem p/ WhatsApp</button>
-              <button type="button" id="btnCopyCreatedCode" class="btn-sm">📋 Copiar Código</button>
-            </div>
+            <span id="createdTargetText" style="color:#cbd5e1;font-size:0.86rem;margin-left:0.5rem;"></span>
+          </div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.55rem;">
+            <button type="button" id="btnOpenCreatedWA" class="btn-wa">📲 Enviar Direto no WhatsApp</button>
+            <button type="button" id="btnCopyCreatedWA" class="btn-sm">📋 Copiar Mensagem</button>
+            <button type="button" id="btnCopyCreatedCode" class="btn-sm">🔑 Copiar Código</button>
           </div>
           <div style="font-size:0.78rem;color:var(--muted);">
-            Envie no WhatsApp da pessoa. Assim que ela digitar esse código e criar a senha dela, o código será marcado como <strong>Usado</strong> e não funcionará em nenhum outro celular.
+            Ao tocar em <strong>Enviar Direto no WhatsApp</strong>, o WhatsApp abre com o link e o código prontos — basta escolher o contato (se não digitou o número) e enviar.
           </div>
         </div>
       </section>
 
       <!-- LISTA DE CONVITES -->
       <section class="card" style="margin-bottom:1.25rem;">
-        <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">📋 Convites Gerados ({{ invites|length }})</h2>
+        <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">📋 Convites Gerados (<span id="invCount">{{ invites|length }}</span>)</h2>
+        <div id="invitesListContainer">
         {% if not invites %}
-          <p style="color:var(--muted);font-size:0.86rem;">Nenhum convite gerado ainda. Crie o primeiro acima (ex.: para você mesmo ou para o Dr. Milton).</p>
+          <p id="emptyInvitesMsg" style="color:var(--muted);font-size:0.86rem;">Nenhum convite gerado ainda. Crie o primeiro acima (ex.: para o Dr. Milton).</p>
         {% else %}
           {% for inv in invites %}
           <div class="item-card">
@@ -257,6 +324,9 @@
                 <span class="code-mono">{{ inv.code }}</span>
                 {% if inv.recipient_label %}
                   <span style="color:#e2e8f0;font-weight:600;margin-left:0.5rem;">— {{ inv.recipient_label }}</span>
+                {% endif %}
+                {% if inv.recipient_phone %}
+                  <span style="color:#93c5fd;font-size:0.82rem;margin-left:0.4rem;">📱 {{ inv.recipient_phone }}</span>
                 {% endif %}
               </div>
               <div>
@@ -280,17 +350,26 @@
 
             {% if inv.status == 'active' %}
             <div style="display:flex;gap:0.5rem;margin-top:0.65rem;flex-wrap:wrap;">
-              <button type="button" class="btn-wa btn-copy-wa-row" data-code="{{ inv.code }}" data-recipient="{{ inv.recipient_label or '' }}">
-                📲 Copiar Mensagem WhatsApp
+              <button type="button" class="btn-wa btn-send-wa-row"
+                      data-code="{{ inv.code }}"
+                      data-recipient="{{ inv.recipient_label or '' }}"
+                      data-phone="{{ inv.recipient_phone or '' }}">
+                📲 Enviar no WhatsApp
+              </button>
+              <button type="button" class="btn-sm btn-copy-wa-row"
+                      data-code="{{ inv.code }}"
+                      data-recipient="{{ inv.recipient_label or '' }}">
+                📋 Copiar Mensagem
               </button>
               <button type="button" class="btn-danger-sm btn-revoke-invite" data-id="{{ inv.id }}">
-                Cancelar Convite
+                Cancelar
               </button>
             </div>
             {% endif %}
           </div>
           {% endfor %}
         {% endif %}
+        </div>
       </section>
 
       <!-- USUÁRIOS E APARELHOS VINCULADOS -->
@@ -305,8 +384,11 @@
             <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
               <div>
                 <strong style="color:#f1f5f9;font-size:0.98rem;">{{ u.name }}</strong>
+                {% if u.phone %}
+                  <span style="color:#86efac;font-size:0.82rem;margin-left:0.4rem;">📱 {{ u.phone }}</span>
+                {% endif %}
                 {% if u.email %}
-                  <span style="color:var(--muted);font-size:0.82rem;">({{ u.email }})</span>
+                  <span style="color:var(--muted);font-size:0.82rem;margin-left:0.4rem;">({{ u.email }})</span>
                 {% endif %}
               </div>
               <div>
@@ -343,6 +425,89 @@
     function showAdmMsg(txt, ok) {
       admMsg.textContent = txt;
       admMsg.className = "alert-box " + (ok ? "ok" : "err");
+      admMsg.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    // Mostra botão "Liberar Meu Celular" se o aparelho atual ainda não tiver vínculo de usuário
+    (function checkSelfDevice() {
+      const bar = document.getElementById("selfDeviceBar");
+      if (!bar) return;
+      const hasToken = window.CardiaSyncAuth && window.CardiaSyncAuth.getToken();
+      if (!hasToken) {
+        bar.style.display = "flex";
+      }
+      const btnLink = document.getElementById("btnLinkMyPhone");
+      if (btnLink) {
+        btnLink.addEventListener("click", async () => {
+          const nome = prompt("Seu nome para identificar este aparelho:", "Administrador");
+          if (nome === null) return;
+          const res = await fetch("/api/admin/link-this-device", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: nome.trim() || "Administrador" }),
+          });
+          const data = await res.json();
+          if (res.ok && data.ok) {
+            if (data.device_token && window.CardiaSyncAuth) {
+              window.CardiaSyncAuth.setToken(data.device_token);
+            }
+            bar.style.display = "none";
+            showAdmMsg("✅ Este celular foi liberado! Agora você pode usar o app normalmente sem precisar de convite.", true);
+          } else {
+            showAdmMsg(data.error || "Não foi possível vincular este aparelho.", false);
+          }
+        });
+      }
+    })();
+
+    // Máscara de telefone brasileiro
+    function formatPhoneBR(val) {
+      const d = (val || "").replace(/\D/g, "").slice(0, 11);
+      if (d.length <= 2) return d;
+      if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+      if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+      return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+    }
+
+    const phoneInput = document.getElementById("invPhone");
+    if (phoneInput) {
+      phoneInput.addEventListener("input", (e) => {
+        e.target.value = formatPhoneBR(e.target.value);
+      });
+    }
+
+    // Botão Agenda (Contact Picker API no Android/Chrome + orientação no iPhone)
+    const btnPickContact = document.getElementById("btnPickContact");
+    if (btnPickContact) {
+      btnPickContact.addEventListener("click", async () => {
+        if ("contacts" in navigator && "ContactsManager" in window) {
+          try {
+            const contacts = await navigator.contacts.select(["name", "tel"], { multiple: false });
+            if (contacts && contacts.length > 0) {
+              const c = contacts[0];
+              if (c.name && c.name.length > 0 && !document.getElementById("invRecipient").value.trim()) {
+                document.getElementById("invRecipient").value = c.name[0];
+              }
+              if (c.tel && c.tel.length > 0) {
+                let raw = c.tel[0].replace(/\D/g, "");
+                if (raw.startsWith("55") && raw.length >= 12) raw = raw.slice(2);
+                phoneInput.value = formatPhoneBR(raw);
+              }
+              showAdmMsg("Contato importado da agenda!", true);
+            }
+          } catch (err) {
+            if (err && err.name !== "AbortError") {
+              showAdmMsg("Não foi possível ler a agenda deste navegador. Digite o número ou escolha o contato direto no WhatsApp.", false);
+            }
+          }
+        } else {
+          phoneInput.focus();
+          showAdmMsg(
+            "No iPhone/Safari o navegador não libera a agenda diretamente. Digite o número com DDD acima OU deixe em branco e toque em 'Enviar Direto no WhatsApp' para escolher o contato dentro do próprio WhatsApp!",
+            true
+          );
+        }
+      });
     }
 
     function buildWhatsAppMessage(code, recipient) {
@@ -360,6 +525,18 @@
 ` +
         `Ao abrir, o código já estará preenchido — basta escolher sua senha pessoal (ela ficará salva no aparelho).`
       );
+    }
+
+    function openWhatsAppInvite(code, recipient, phone) {
+      const text = encodeURIComponent(buildWhatsAppMessage(code, recipient));
+      let digits = (phone || "").replace(/\D/g, "");
+      if (digits.length === 10 || digits.length === 11) {
+        digits = "55" + digits;
+      }
+      const waUrl = digits.length >= 12
+        ? `https://wa.me/${digits}?text=${text}`
+        : `https://api.whatsapp.com/send?text=${text}`;
+      window.open(waUrl, "_blank");
     }
 
     async function copyText(text, successMsg) {
@@ -422,20 +599,20 @@
       });
     }
 
-    let lastCreatedCode = "";
-    let lastCreatedRecipient = "";
+    let lastCreated = { code: "", recipient: "", phone: "" };
     const createForm = document.getElementById("formCreateInvite");
     if (createForm) {
       createForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const recipient = document.getElementById("invRecipient").value.trim();
+        const recipient_phone = document.getElementById("invPhone").value.trim();
         const custom_code = document.getElementById("invCustomCode").value.trim().toUpperCase();
         const expires_hours = parseInt(document.getElementById("invExpires").value, 10) || 0;
 
         const res = await fetch("/api/admin/invites", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ recipient, custom_code, expires_hours }),
+          body: JSON.stringify({ recipient, recipient_phone, custom_code, expires_hours }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
@@ -443,28 +620,75 @@
           return;
         }
 
-        lastCreatedCode = data.invite.code;
-        lastCreatedRecipient = data.invite.recipient_label || "";
-        document.getElementById("createdCodeText").textContent = lastCreatedCode;
+        lastCreated = {
+          code: data.invite.code,
+          recipient: data.invite.recipient_label || "",
+          phone: data.invite.recipient_phone || "",
+        };
+        document.getElementById("createdCodeText").textContent = lastCreated.code;
+        document.getElementById("createdTargetText").textContent =
+          (lastCreated.recipient ? `• ${lastCreated.recipient}` : "") +
+          (lastCreated.phone ? ` (${lastCreated.phone})` : "");
         document.getElementById("newInviteBox").style.display = "block";
-        showAdmMsg(`Convite ${lastCreatedCode} criado! Clique em "Copiar Mensagem p/ WhatsApp".`, true);
+        showAdmMsg(`Convite ${lastCreated.code} criado com sucesso! Toque em "Enviar Direto no WhatsApp".`, true);
+
+        // Adiciona o card imediatamente na lista de Convites Gerados
+        const emptyMsg = document.getElementById("emptyInvitesMsg");
+        if (emptyMsg) emptyMsg.remove();
+        const listEl = document.getElementById("invitesListContainer");
+        const countEl = document.getElementById("invCount");
+        if (countEl) countEl.textContent = String((parseInt(countEl.textContent, 10) || 0) + 1);
+        if (listEl) {
+          const card = document.createElement("div");
+          card.className = "item-card";
+          card.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <span class="code-mono">${lastCreated.code}</span>
+                ${lastCreated.recipient ? `<span style="color:#e2e8f0;font-weight:600;margin-left:0.5rem;">— ${lastCreated.recipient}</span>` : ""}
+                ${lastCreated.phone ? `<span style="color:#93c5fd;font-size:0.82rem;margin-left:0.4rem;">📱 ${lastCreated.phone}</span>` : ""}
+              </div>
+              <div><span class="badge badge-active">Disponível</span></div>
+            </div>
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:0.4rem;">Criado agora</div>
+            <div style="display:flex;gap:0.5rem;margin-top:0.65rem;flex-wrap:wrap;">
+              <button type="button" class="btn-wa" onclick="openWhatsAppInvite('${lastCreated.code}', '${lastCreated.recipient.replace(/'/g, "\'")}', '${lastCreated.phone.replace(/'/g, "\'")}')">📲 Enviar no WhatsApp</button>
+              <button type="button" class="btn-sm" onclick="copyText(buildWhatsAppMessage('${lastCreated.code}', '${lastCreated.recipient.replace(/'/g, "\'")}'), 'Mensagem copiada!')">📋 Copiar Mensagem</button>
+            </div>
+          `;
+          listEl.prepend(card);
+        }
+      });
+
+      document.getElementById("btnOpenCreatedWA").addEventListener("click", () => {
+        openWhatsAppInvite(lastCreated.code, lastCreated.recipient, lastCreated.phone);
       });
 
       document.getElementById("btnCopyCreatedWA").addEventListener("click", () => {
-        const msg = buildWhatsAppMessage(lastCreatedCode, lastCreatedRecipient);
-        copyText(msg, "Mensagem pronta para WhatsApp copiada! Agora é só colar na conversa.");
+        const msg = buildWhatsAppMessage(lastCreated.code, lastCreated.recipient);
+        copyText(msg, "Mensagem pronta para WhatsApp copiada!");
       });
 
       document.getElementById("btnCopyCreatedCode").addEventListener("click", () => {
-        copyText(lastCreatedCode, `Código ${lastCreatedCode} copiado!`);
+        copyText(lastCreated.code, `Código ${lastCreated.code} copiado!`);
       });
     }
+
+    document.querySelectorAll(".btn-send-wa-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        openWhatsAppInvite(
+          btn.getAttribute("data-code"),
+          btn.getAttribute("data-recipient"),
+          btn.getAttribute("data-phone")
+        );
+      });
+    });
 
     document.querySelectorAll(".btn-copy-wa-row").forEach((btn) => {
       btn.addEventListener("click", () => {
         const code = btn.getAttribute("data-code");
         const rec = btn.getAttribute("data-recipient");
-        copyText(buildWhatsAppMessage(code, rec), `Mensagem do convite ${code} copiada para WhatsApp!`);
+        copyText(buildWhatsAppMessage(code, rec), `Mensagem do convite ${code} copiada!`);
       });
     });
 

@@ -46,6 +46,9 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
     "DATABASE_URL", "sqlite:///cardiasync_dev.db"
 )
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 uri = app.config["SQLALCHEMY_DATABASE_URI"]
 if uri and uri.startswith("postgres://"):
@@ -65,6 +68,7 @@ def _ensure_schema():
     alterations = [
         ("users", "password_hash", "VARCHAR(256)"),
         ("users", "is_blocked", "BOOLEAN"),
+        ("invite_codes", "recipient_phone", "VARCHAR(40)"),
         ("users", "recovery_code_hash", "VARCHAR(256)"),
         ("users", "reset_code_hash", "VARCHAR(256)"),
         ("users", "reset_code_expires", "TIMESTAMP"),
@@ -241,6 +245,10 @@ def enforce_device_lock():
         "api_admin_setup",
         "api_admin_login",
         "api_admin_logout",
+        "api_admin_create_invite",
+        "api_admin_revoke_invite",
+        "api_admin_toggle_user",
+        "api_admin_link_this_device",
         "api_auth_register",
         "api_auth_login",
         "api_auth_restore_device",
@@ -249,7 +257,11 @@ def enforce_device_lock():
         "api_auth_recover_rescue",
     }
 
-    if request.endpoint in public_endpoints or request.endpoint is None:
+    if (
+        request.endpoint in public_endpoints
+        or request.endpoint is None
+        or (request.endpoint and request.endpoint.startswith("api_admin_"))
+    ):
         return None
 
     if g.current_user is None:
@@ -1557,15 +1569,16 @@ def api_admin_logout():
 @app.route("/api/admin/invites", methods=["POST"])
 def api_admin_create_invite():
     if not _is_admin_authenticated():
-        return jsonify({"ok": False, "error": "Acesso restrito ao administrador."}), 401
+        return jsonify({"ok": False, "error": "Sessão do administrador expirada. Entre novamente com a Senha Mestra."}), 401
 
     data = request.get_json(silent=True) or {}
     recipient = (data.get("recipient") or "").strip() or None
+    recipient_phone = (data.get("recipient_phone") or "").strip() or None
     raw_custom = (data.get("custom_code") or "").strip().upper()
     expires_hours = int(data.get("expires_hours") or 0)
 
     if raw_custom:
-        cleaned = "".join(ch for ch in raw_custom if ch.isalnum() or ch in ("-", "_"))[:28]
+        cleaned = "".join(ch for ch in raw_custom if ch.isalnum() or ch in ("-", "_", "$", "#"))[:28]
         if len(cleaned) < 3:
             return jsonify({"ok": False, "error": "O código personalizado deve ter ao menos 3 caracteres."}), 400
         if InviteCode.query.filter(db.func.upper(InviteCode.code) == cleaned).first():
@@ -1581,6 +1594,7 @@ def api_admin_create_invite():
     inv = InviteCode(
         code=code,
         recipient_label=recipient,
+        recipient_phone=recipient_phone,
         status="active",
         expires_at=expires_at,
     )
@@ -1593,9 +1607,47 @@ def api_admin_create_invite():
             "id": inv.id,
             "code": inv.code,
             "recipient_label": inv.recipient_label,
+            "recipient_phone": inv.recipient_phone,
             "status": inv.status,
         },
     })
+
+
+@app.route("/api/admin/link-this-device", methods=["POST"])
+def api_admin_link_this_device():
+    """Permite ao próprio administrador vincular o celular atual sem precisar digitar código."""
+    if not _is_admin_authenticated():
+        return jsonify({"ok": False, "error": "Acesso restrito ao administrador."}), 401
+
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "Administrador").strip()
+    phone = (data.get("phone") or "").strip() or None
+    password = (data.get("password") or "").strip()
+
+    user = User.query.filter(db.func.lower(User.name) == name.lower()).first()
+    if not user:
+        user = User(name=name, phone=phone)
+        db.session.add(user)
+    elif phone:
+        user.phone = phone
+
+    if password and len(password) >= 4:
+        user.password_hash = generate_password_hash(password)
+    elif not user.password_hash:
+        user.password_hash = generate_password_hash(secrets.token_urlsafe(16))
+
+    if not user.recovery_code_hash:
+        user.recovery_code_hash = generate_password_hash(_generate_rescue_code())
+    user.is_blocked = False
+    db.session.commit()
+
+    raw_token = _issue_device_session(user, request.headers.get("User-Agent", ""))
+    resp = make_response(jsonify({
+        "ok": True,
+        "device_token": raw_token,
+        "user": {"id": user.id, "name": user.name},
+    }))
+    return _attach_device_cookie(resp, raw_token)
 
 
 @app.route("/api/admin/invites/<int:iid>/revoke", methods=["POST"])
@@ -1648,6 +1700,7 @@ def api_auth_register():
     data = request.get_json(silent=True) or {}
     invite_code = (data.get("invite_code") or "").strip().upper()
     name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip() or None
     email = (data.get("email") or "").strip().lower() or None
     password = data.get("password") or ""
 
@@ -1702,13 +1755,16 @@ def api_auth_register():
         }), 409
 
     rescue_code = _generate_rescue_code()
+    effective_phone = phone or getattr(invite, "recipient_phone", None)
     if existing:
         user = existing
         user.name = name
         if email:
             user.email = email
+        if effective_phone:
+            user.phone = effective_phone
     else:
-        user = User(name=name, email=email)
+        user = User(name=name, phone=effective_phone, email=email)
         db.session.add(user)
 
     user.password_hash = generate_password_hash(password)

@@ -247,6 +247,11 @@
         </div>
 
         <div class="auth-field">
+          <label for="regPhone">Seu Celular / WhatsApp (com DDD)</label>
+          <input type="tel" id="regPhone" inputmode="tel" placeholder="Ex.: (83) 99999-9999" autocomplete="tel" />
+        </div>
+
+        <div class="auth-field">
           <label for="regEmail">E-mail para recuperação de senha</label>
           <input type="email" id="regEmail" placeholder="seuemail@exemplo.com" autocomplete="email" />
         </div>
@@ -455,6 +460,7 @@
         clearMsg();
         const invite_code = document.getElementById("regInvite").value.trim().toUpperCase();
         const name = document.getElementById("regName").value.trim();
+        const phone = document.getElementById("regPhone").value.trim();
         const email = document.getElementById("regEmail").value.trim();
         const password = document.getElementById("regPass").value;
         const confirm = document.getElementById("regPassConfirm").value;
@@ -471,7 +477,7 @@
         const res = await fetch("/api/auth/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invite_code, name, email, password }),
+          body: JSON.stringify({ invite_code, name, phone, email, password }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {

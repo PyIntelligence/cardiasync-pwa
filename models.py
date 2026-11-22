@@ -56,6 +56,7 @@ class InviteCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(32), unique=True, nullable=False, index=True)
     recipient_label = db.Column(db.String(120))
+    recipient_phone = db.Column(db.String(40))
     status = db.Column(db.String(20), default="active", nullable=False)  # active | used | revoked
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
