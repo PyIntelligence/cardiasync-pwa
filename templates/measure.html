@@ -4,10 +4,10 @@
 {% block content %}
 <section class="measure-section">
   <div class="card measure-card">
-    <h2>Medição por Câmera (PPG) + ECG</h2>
+    <h2>Medição por Câmera (PPG) + Rede Neural ECG</h2>
     <p class="hint">
       Encoste o dedo cobrindo <strong>totalmente</strong> a câmera traseira e o flash.
-      Com o sistema calibrado, a medição inicia <strong>automaticamente</strong> ao detectar o dedo.
+      Com o sistema calibrado, a medição inicia <strong>automaticamente</strong>, analisa o ritmo e reconstrói o traçado ECG previsto via rede neural.
     </p>
 
     <div id="calibrationBanner" class="cal-banner checking">
@@ -80,8 +80,23 @@
         </div>
       </div>
 
-      <div id="ecgSafetyContainer" style="margin-top:0.95rem;"></div>
+      <!-- Triagem Automática de Irregularidade de Pulso -->
+      <div id="irregularityContainer" style="margin-top:0.95rem;"></div>
 
+      <!-- Osciloscópio de Tradução Neural PPG-to-ECG -->
+      <div class="ecg-canvas-box" style="margin-top:0.95rem;border-color:rgba(16,185,129,0.4);">
+        <div class="ecg-canvas-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.4rem;">
+          <span>🧠 Tradução Neural PPG → ECG (Traçado Sintético Previsto)</span>
+          <span class="badge medium" style="font-size:0.68rem;">Previsão Experimental</span>
+        </div>
+        <canvas id="neuralEcgCanvas" style="width:100%;height:230px;display:block;"></canvas>
+      </div>
+      <div id="neuralTelemetryContainer" style="margin-top:0.65rem;"></div>
+
+      <!-- Painel de Segurança Clínica -->
+      <div id="ecgSafetyContainer" style="margin-top:0.85rem;"></div>
+
+      <!-- Gráfico Comparativo Batimento a Batimento: ECG × Câmera (PPG) -->
       <div class="ecg-canvas-box" style="margin-top:0.85rem;">
         <div class="ecg-canvas-header">
           <span>📈 Comparativo Batimento a Batimento: ECG × Câmera (PPG)</span>
@@ -94,7 +109,7 @@
       <p class="result-msg" id="resMsg"></p>
       <div id="sendStatus" style="font-size:0.85rem;color:var(--muted);margin:0.5rem 0;"></div>
       <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
-        <a id="btnPdf" class="btn btn-secondary" href="#" target="_blank" style="flex:1;margin-top:0;display:none;">📄 Baixar PDF</a>
+        <a id="btnPdf" class="btn btn-secondary" href="#" target="_blank" style="flex:1;margin-top:0;display:none;">📄 Baixar PDF para Médico</a>
         <button type="button" id="btnRearmAuto" class="btn btn-primary" style="flex:1;">🔄 Nova Medição</button>
       </div>
     </div>
@@ -115,15 +130,15 @@
 
     <div class="ecg-module-card" id="ecgPanel">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.55rem;">
-        <strong style="font-size:0.96rem;color:#93c5fd;">⚡ ECG de Referência & Segurança Clínica (Opcional)</strong>
-        <span class="badge medium" id="ecgStatusBadge">Sem ECG (Segurança 48%)</span>
+        <strong style="font-size:0.96rem;color:#93c5fd;">⚡ ECG de Referência & Treino Neural (Opcional)</strong>
+        <span class="badge medium" id="ecgStatusBadge">Modo Rede Neural PPG→ECG</span>
       </div>
 
       <p class="hint" style="margin-bottom:0.75rem;font-size:0.83rem;line-height:1.45;">
-        <strong>Para que serve o ECG aqui?</strong> A câmera mede o pulso óptico no dedo (PPG), que pode variar com dedo frio, movimento ou extrassístoles.
-        Ao anexar os intervalos RR de um ECG (cinta cardíaca, smartwatch ou eletrocardiógrafo), o sistema:
-        <br>• <strong>1) Visualiza o traçado P-QRS-T</strong> e filtra automaticamente batimentos ectópicos/artefatos (&gt;20% de desvio);
-        <br>• <strong>2) Cruza ECG × Câmera</strong> — se a FC concordar (≤ 5 bpm), confirma <strong>Alta Segurança (85–98%)</strong> e reduz a margem de erro (±mmHg).
+        <strong>Como funciona:</strong> Mesmo sem ECG externo, o sistema analisa a regularidade do pulso e gera o
+        <strong>ECG previsto por rede neural (PPG-to-ECG)</strong>. Se você também possuir intervalos RR de um ECG real, anexe-os abaixo para:
+        <br>• <strong>1) Visualizar o traçado real P-QRS-T</strong> e filtrar ectopias (&gt;20% de desvio);
+        <br>• <strong>2) Confirmar Alta Segurança (85–98%)</strong> e aprimorar a rede neural PPG-to-ECG.
       </p>
 
       <div style="display:flex;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.65rem;">
@@ -150,7 +165,7 @@
         </div>
         <div style="display:flex;flex-direction:column;justify-content:flex-end;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;">
-            <span id="ecgPreviewInfo" style="font-size:0.8rem;color:var(--muted);">Nenhum ECG carregado.</span>
+            <span id="ecgPreviewInfo" style="font-size:0.8rem;color:var(--muted);">Nenhum ECG externo carregado (usará Rede Neural PPG→ECG).</span>
             <button type="button" id="clearEcgBtn" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.25rem 0.6rem;font-size:0.76rem;" hidden>Limpar</button>
           </div>
         </div>
@@ -166,15 +181,15 @@
 
       <div class="ecg-canvas-box">
         <div class="ecg-canvas-header">
-          <span>🫀 Visualização do Traçado ECG (Verde = Normal · Vermelho = Ectopia/Artefato Filtrado)</span>
+          <span>🫀 Visualização do ECG Externo (Verde = Normal · Vermelho = Ectopia/Artefato Filtrado)</span>
         </div>
-        <canvas id="ecgWaveformCanvas" style="width:100%;height:165px;display:block;"></canvas>
+        <canvas id="ecgWaveformCanvas" style="width:100%;height:155px;display:block;"></canvas>
       </div>
     </div>
 
     <div class="form-row" style="margin-top:1rem;">
       <label for="userName">Nome (usado para localizar sua calibração)</label>
-      <input type="text" id="userName" placeholder="Seu nome" value="Anônimo" />
+      <input type="text" id="userName" placeholder="Seu nome" value="{{ current_user.name if current_user else 'Anônimo' }}" />
     </div>
 
     <div class="form-row">

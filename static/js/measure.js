@@ -655,6 +655,18 @@
 
       resultBox.hidden = false;
       if (window.CardiaSyncECG) {
+        const irregContainer = document.getElementById("irregularityContainer");
+        if (irregContainer && data.pulse_irregularity) {
+          irregContainer.innerHTML = window.CardiaSyncECG.buildIrregularityHtml(data.pulse_irregularity);
+        }
+        const neuralCanvas = document.getElementById("neuralEcgCanvas");
+        if (neuralCanvas && data.neural_ecg_prediction) {
+          window.CardiaSyncECG.renderNeuralEcgPredictionCanvas(neuralCanvas, data.neural_ecg_prediction);
+        }
+        const neuralTelContainer = document.getElementById("neuralTelemetryContainer");
+        if (neuralTelContainer && data.neural_ecg_prediction) {
+          neuralTelContainer.innerHTML = window.CardiaSyncECG.buildNeuralTelemetryHtml(data.neural_ecg_prediction);
+        }
         const safetyContainer = document.getElementById("ecgSafetyContainer");
         if (safetyContainer) {
           safetyContainer.innerHTML = window.CardiaSyncECG.buildSafetyHtml(conf, data.variability);

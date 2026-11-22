@@ -1,5 +1,6 @@
 /**
- * CardiaSync — Visualizador Gráfico de ECG & Segurança Clínica
+ * CardiaSync — Visualizador Gráfico de ECG, Tradução Neural PPG-to-ECG,
+ * Triagem de Irregularidade de Pulso e Segurança Clínica
  */
 window.CardiaSyncECG = (() => {
   const SAMPLE_NORMAL_RR = [
@@ -253,6 +254,266 @@ window.CardiaSyncECG = (() => {
     );
   }
 
+  /**
+   * Renderiza o Osciloscópio Duplo de Tradução Neural PPG-to-ECG:
+   * - Canal Superior: Traçado P-QRS-T reconstruído pela Rede Neural MLP
+   * - Canal Inferior: Pulso Óptico (PPG) sincronizado da câmera
+   */
+  function renderNeuralEcgPredictionCanvas(canvas, neuralPred) {
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(290, Math.floor(rect.width || canvas.width || 480));
+    const height = Math.max(210, Math.floor(rect.height || canvas.height || 230));
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+
+    // Fundo escuro clínico
+    ctx.fillStyle = "#050b16";
+    ctx.fillRect(0, 0, width, height);
+
+    // Grade milimetrada dupla (fina e principal)
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.06)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x < width; x += 12) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+    }
+    for (let y = 0; y < height; y += 12) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.14)";
+    for (let x = 0; x < width; x += 60) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+    }
+    for (let y = 0; y < height; y += 60) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+
+    const pts = (neuralPred && neuralPred.waveform_points) || [];
+    if (pts.length < 4) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Aguardando captura PPG para reconstrução neural de ECG…", width / 2, height / 2);
+      return;
+    }
+
+    const splitY = Math.floor(height * 0.60);
+
+    // Divisor entre canal superior (ECG Neural) e canal inferior (PPG Câmera)
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, splitY);
+    ctx.lineTo(width, splitY);
+    ctx.stroke();
+
+    const padL = 12;
+    const padR = 12;
+    const plotW = width - padL - padR;
+
+    const ecgVals = pts.map((p) => Number(p.ecg_mv || 0));
+    const ppgVals = pts.map((p) => Number(p.ppg_norm || 0));
+
+    const ecgMin = Math.min(...ecgVals);
+    const ecgMax = Math.max(...ecgVals);
+    const ecgSpan = Math.max(0.45, ecgMax - ecgMin);
+    const ecgTop = 26;
+    const ecgBot = splitY - 12;
+    const ecgH = ecgBot - ecgTop;
+
+    const ppgMin = Math.min(...ppgVals);
+    const ppgMax = Math.max(...ppgVals);
+    const ppgSpan = Math.max(0.25, ppgMax - ppgMin);
+    const ppgTop = splitY + 22;
+    const ppgBot = height - 14;
+    const ppgH = ppgBot - ppgTop;
+
+    // 1. Canal Inferior: Onda PPG Óptica da Câmera (com preenchimento suave)
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = padL + (i / Math.max(1, pts.length - 1)) * plotW;
+      const y = ppgBot - ((Number(p.ppg_norm || 0) - ppgMin) / ppgSpan) * ppgH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+
+    ctx.lineTo(padL + plotW, ppgBot);
+    ctx.lineTo(padL, ppgBot);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(56, 189, 248, 0.12)";
+    ctx.fill();
+
+    // 2. Canal Superior: Traçado ECG Previsto por Rede Neural (segmentado por regularidade)
+    ctx.lineWidth = 2.1;
+    for (let i = 1; i < pts.length; i++) {
+      const x0 = padL + ((i - 1) / Math.max(1, pts.length - 1)) * plotW;
+      const y0 = ecgBot - ((Number(pts[i - 1].ecg_mv || 0) - ecgMin) / ecgSpan) * ecgH;
+      const x1 = padL + (i / Math.max(1, pts.length - 1)) * plotW;
+      const y1 = ecgBot - ((Number(pts[i].ecg_mv || 0) - ecgMin) / ecgSpan) * ecgH;
+
+      const isIrreg = Boolean(pts[i].irreg || pts[i - 1].irreg);
+      ctx.strokeStyle = isIrreg ? "#ef4444" : "#10b981";
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+
+    // Marca picos R previstos e episódios irregulares
+    for (let i = 2; i < pts.length - 2; i++) {
+      const v = Number(pts[i].ecg_mv || 0);
+      if (
+        v > ecgMin + 0.65 * ecgSpan &&
+        v >= Number(pts[i - 1].ecg_mv || 0) &&
+        v > Number(pts[i + 1].ecg_mv || 0)
+      ) {
+        const x = padL + (i / Math.max(1, pts.length - 1)) * plotW;
+        const y = ecgBot - ((v - ecgMin) / ecgSpan) * ecgH;
+        const isIrreg = Boolean(pts[i].irreg);
+        ctx.fillStyle = isIrreg ? "#ef4444" : "#34d399";
+        ctx.beginPath();
+        ctx.arc(x, y, isIrreg ? 3.5 : 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        if (isIrreg) {
+          ctx.font = "bold 9px -apple-system, BlinkMacSystemFont, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#fca5a5";
+          ctx.fillText("⚠️", x, Math.max(14, y - 6));
+        }
+      }
+    }
+
+    // Cabeçalhos dos dois canais
+    ctx.textAlign = "left";
+    ctx.font = "bold 10.5px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillStyle = "#34d399";
+    ctx.fillText(
+      `🧠 ECG Reconstruído (Rede Neural PPG→ECG · Experimental) · FC Prev: ${neuralPred.predicted_hr_bpm ?? "—"} bpm`,
+      10,
+      15
+    );
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "10px monospace";
+    const intervals = neuralPred.intervals_ms || {};
+    ctx.fillText(
+      `PAT: ${neuralPred.predicted_pat_ms ?? "—"}ms · QTc: ${intervals.qtc_ms ?? "—"}ms`,
+      width - 10,
+      15
+    );
+
+    ctx.textAlign = "left";
+    ctx.font = "bold 10px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillStyle = "#7dd3fc";
+    ctx.fillText("📷 Pulso Óptico Capturado pela Câmera (PPG Sincronizado)", 10, splitY + 14);
+  }
+
+  function buildNeuralTelemetryHtml(neuralPred) {
+    if (!neuralPred || !neuralPred.available) return "";
+    const iv = neuralPred.intervals_ms || {};
+    const isTrained = neuralPred.model_mode === "trained_neural";
+    const modeBadgeClass = isTrained ? "good" : "medium";
+    const modeText = isTrained
+      ? `Rede Neural MLP Treinada (${neuralPred.n_paired_recordings} pares PPG+ECG)`
+      : "Rede Neural PPG→ECG (Base Fisiológica)";
+
+    return `
+      <div class="neural-telemetry-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.55rem;">
+          <span class="badge ${modeBadgeClass}">${modeText}</span>
+          <span style="font-size:0.74rem;color:#94a3b8;">${neuralPred.architecture || "MLP PPG→ECG"}</span>
+        </div>
+        <div class="neural-telemetry-grid">
+          <div class="nt-item">
+            <span class="nt-lbl">FC ECG Prev.</span>
+            <span class="nt-val">${neuralPred.predicted_hr_bpm ?? "—"} <small>bpm</small></span>
+          </div>
+          <div class="nt-item">
+            <span class="nt-lbl">PAT Estimado</span>
+            <span class="nt-val">${neuralPred.predicted_pat_ms ?? "—"} <small>ms</small></span>
+          </div>
+          <div class="nt-item">
+            <span class="nt-lbl">Intervalo PR</span>
+            <span class="nt-val">${iv.pr_ms ?? "—"} <small>ms</small></span>
+          </div>
+          <div class="nt-item">
+            <span class="nt-lbl">Complexo QRS</span>
+            <span class="nt-val">${iv.qrs_ms ?? "—"} <small>ms</small></span>
+          </div>
+          <div class="nt-item">
+            <span class="nt-lbl">QTc (Bazett)</span>
+            <span class="nt-val">${iv.qtc_ms ?? "—"} <small>ms</small></span>
+          </div>
+          <div class="nt-item">
+            <span class="nt-lbl">RMSSD Prev.</span>
+            <span class="nt-val">${neuralPred.predicted_rmssd_ms ?? "—"} <small>ms</small></span>
+          </div>
+        </div>
+        <p style="font-size:0.76rem;color:#94a3b8;margin-top:0.55rem;line-height:1.4;">
+          ℹ️ <strong>Previsão Experimental:</strong> ${neuralPred.disclaimer || ""}
+        </p>
+      </div>
+    `;
+  }
+
+  function buildIrregularityHtml(irregularity) {
+    if (!irregularity) return "";
+    const status = irregularity.status || "regular";
+    const score = irregularity.regularity_score != null ? irregularity.regularity_score : 85;
+    let barColor = "#22c55e";
+    let icon = "✅";
+    if (status === "irregular") {
+      barColor = "#ef4444";
+      icon = "🚨";
+    } else if (status === "borderline") {
+      barColor = "#f59e0b";
+      icon = "⚠️";
+    } else if (status === "insufficient") {
+      barColor = "#64748b";
+      icon = "ℹ️";
+    }
+
+    return `
+      <div class="ecg-safety-card level-irreg-${status}">
+        <div class="ecg-safety-top">
+          <strong>${icon} Triagem de Ritmo: ${irregularity.label || "Ritmo Regular"}</strong>
+          <span class="ecg-safety-score" style="color:${barColor};">${score}%</span>
+        </div>
+        <div class="ecg-safety-bar-bg">
+          <div class="ecg-safety-bar-fill" style="width:${score}%;background:${barColor};"></div>
+        </div>
+        <ul class="ecg-safety-pillars" style="margin-bottom:0.45rem;">
+          <li><span>Intervalos Irregulares:</span> <strong>${irregularity.irregular_count ?? 0} de ${irregularity.total_beats ?? 0} (${irregularity.irregularity_pct ?? 0}%)</strong></li>
+          <li><span>Padrão Extrassístole + Pausa:</span> <strong>${irregularity.premature_pairs ?? 0} episódio(s)</strong></li>
+        </ul>
+        <p style="font-size:0.8rem;color:var(--text);line-height:1.45;margin:0;">
+          ${irregularity.clinical_summary || ""}
+        </p>
+      </div>
+    `;
+  }
+
   function renderEcgVsPpgComparisonCanvas(canvas, variability, bpConfidence) {
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
@@ -393,7 +654,7 @@ window.CardiaSyncECG = (() => {
       ctx.fillText("━ ECG Referência (±5 bpm)", padL + 132, 16);
     } else {
       ctx.fillStyle = "#fbbf24";
-      ctx.fillText("⚠️ Sem ECG (sem confirmação elétrica)", padL + 132, 16);
+      ctx.fillText("⚠️ Sem ECG externo anexado", padL + 132, 16);
     }
 
     ctx.textAlign = "center";
@@ -430,7 +691,7 @@ window.CardiaSyncECG = (() => {
       ? ectopicCount > 0
         ? `${ectopicCount} batimento(s) atípico(s) filtrado(s)`
         : "Ritmo sinusal regular (0 ectopias)"
-      : "Sem verificação elétrica de arritmia";
+      : "Triagem óptica via rede neural PPG→ECG";
 
     const marginTxt =
       level === "high"
@@ -463,6 +724,9 @@ window.CardiaSyncECG = (() => {
     SAMPLE_ECTOPIC_RR,
     parseAndAnalyzeEcg,
     renderEcgWaveformCanvas,
+    renderNeuralEcgPredictionCanvas,
+    buildNeuralTelemetryHtml,
+    buildIrregularityHtml,
     renderEcgVsPpgComparisonCanvas,
     buildSafetyHtml,
   };

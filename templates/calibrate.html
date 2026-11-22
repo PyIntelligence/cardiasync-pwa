@@ -30,7 +30,7 @@
 
       <div class="form-row">
         <label for="userNameCal">Nome</label>
-        <input type="text" id="userNameCal" placeholder="Seu nome" value="Anônimo" />
+        <input type="text" id="userNameCal" placeholder="Seu nome" value="{{ current_user.name if current_user else 'Anônimo' }}" />
       </div>
 
       <div class="form-row">

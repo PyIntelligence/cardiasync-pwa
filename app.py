@@ -1,14 +1,18 @@
 import os
 import json
-from datetime import datetime, timezone
+import hashlib
+import secrets
+from datetime import datetime, timezone, timedelta
 from flask import (
-    Flask, render_template, request, jsonify, send_file, make_response
+    Flask, render_template, request, jsonify, send_file, make_response,
+    redirect, url_for, g, session
 )
+from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from io import BytesIO
-from sqlalchemy import text
+from sqlalchemy import text, or_
 
-from models import db, User, Calibration, Measurement, CalibrationModel
+from models import db, AppSetting, User, InviteCode, DeviceSession, Calibration, Measurement, CalibrationModel
 from calibration_engine import (
     extract_basic_features,
     estimate_blood_pressure,
@@ -26,8 +30,13 @@ from validation_outliers import (
     residual_outliers_with_model,
 )
 from hrv import build_variability_report, assess_bp_confidence
+from neural_ecg import (
+    detect_pulse_irregularity,
+    train_neural_ppg_to_ecg_model,
+    predict_ecg_from_ppg,
+)
 from pdf_report import build_measurement_pdf
-from notify import send_email_with_pdf, send_whatsapp_notification
+from notify import send_email_with_pdf, send_email_plain, send_whatsapp_notification
 
 load_dotenv()
 
@@ -54,6 +63,12 @@ def _ensure_schema():
     db.create_all()
 
     alterations = [
+        ("users", "password_hash", "VARCHAR(256)"),
+        ("users", "is_blocked", "BOOLEAN"),
+        ("users", "recovery_code_hash", "VARCHAR(256)"),
+        ("users", "reset_code_hash", "VARCHAR(256)"),
+        ("users", "reset_code_expires", "TIMESTAMP"),
+        ("users", "updated_at", "TIMESTAMP"),
         ("users", "age", "INTEGER"),
         ("users", "sex", "VARCHAR(20)"),
         ("users", "skin_tone", "VARCHAR(30)"),
@@ -120,8 +135,62 @@ def _ensure_schema():
                 pass
 
 
+DEVICE_COOKIE_NAME = "cs_device_token"
+DEVICE_COOKIE_MAX_AGE = 10 * 365 * 24 * 3600  # 10 anos (permanece ativo até apagar o app)
+
+
+def _hash_token(raw_token: str) -> str:
+    return hashlib.sha256((raw_token or "").encode("utf-8")).hexdigest()
+
+
+def _generate_rescue_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    p1 = "".join(secrets.choice(alphabet) for _ in range(4))
+    p2 = "".join(secrets.choice(alphabet) for _ in range(4))
+    return f"CS-{p1}-{p2}"
+
+
+def _issue_device_session(user: User, user_agent: str = "") -> str:
+    raw_token = secrets.token_urlsafe(48)
+    sess = DeviceSession(
+        user_id=user.id,
+        token_hash=_hash_token(raw_token),
+        device_label=(user_agent or "Celular")[:110],
+    )
+    db.session.add(sess)
+    db.session.commit()
+    return raw_token
+
+
+def _attach_device_cookie(response, raw_token: str):
+    response.set_cookie(
+        DEVICE_COOKIE_NAME,
+        raw_token,
+        max_age=DEVICE_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=request.is_secure,
+        path="/",
+    )
+    return response
+
+
+def _find_user_by_identifier(identifier: str):
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    if "@" in ident:
+        return User.query.filter(db.func.lower(User.email) == ident.lower()).first()
+    return User.query.filter(db.func.lower(User.name) == ident.lower()).first()
+
+
+@app.context_processor
+def inject_current_user():
+    return {"current_user": getattr(g, "current_user", None)}
+
+
 @app.before_request
-def create_tables():
+def enforce_device_lock():
     if not getattr(app, "_schema_ready", False):
         with app.app_context():
             try:
@@ -129,6 +198,78 @@ def create_tables():
             except Exception as e:
                 app.logger.exception("Schema ensure failed: %s", e)
         app._schema_ready = True
+
+    g.current_user = None
+    g.device_session = None
+    g.raw_device_token = None
+
+    raw_token = (
+        request.cookies.get(DEVICE_COOKIE_NAME)
+        or request.headers.get("X-Device-Token")
+        or ""
+    ).strip()
+
+    if raw_token:
+        try:
+            sess = DeviceSession.query.filter_by(
+                token_hash=_hash_token(raw_token),
+                revoked=False,
+            ).first()
+            if sess and sess.user and not getattr(sess.user, "is_blocked", False):
+                g.current_user = sess.user
+                g.device_session = sess
+                g.raw_device_token = raw_token
+                now = datetime.now(timezone.utc)
+                last_seen = sess.last_seen_at
+                if last_seen and last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
+                if not last_seen or (now - last_seen).total_seconds() > 3600:
+                    sess.last_seen_at = now
+                    db.session.commit()
+        except Exception:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
+    public_endpoints = {
+        "static",
+        "health",
+        "service_worker",
+        "acesso_page",
+        "admin_page",
+        "api_admin_setup",
+        "api_admin_login",
+        "api_admin_logout",
+        "api_auth_register",
+        "api_auth_login",
+        "api_auth_restore_device",
+        "api_auth_request_reset",
+        "api_auth_verify_reset",
+        "api_auth_recover_rescue",
+    }
+
+    if request.endpoint in public_endpoints or request.endpoint is None:
+        return None
+
+    if g.current_user is None:
+        if request.path.startswith("/api/"):
+            return jsonify({
+                "ok": False,
+                "auth_required": True,
+                "error": "Aparelho não vinculado. Crie ou informe sua senha de acesso.",
+            }), 401
+        return redirect(url_for("acesso_page"))
+
+    return None
+
+
+@app.after_request
+def refresh_device_cookie(response):
+    raw_token = getattr(g, "raw_device_token", None)
+    if raw_token and request.endpoint != "api_auth_unlink_device":
+        _attach_device_cookie(response, raw_token)
+    return response
 
 
 def _parse_features_safe(features_json_str):
@@ -157,6 +298,11 @@ def _attach_ecg_metadata(record):
     else:
         record.ecg_status_label = "Sem ECG"
         record.ecg_badge_class = "medium"
+
+    irreg = feats.get("pulse_irregularity") or {}
+    record.irregularity_label = irreg.get("label") or "Ritmo Regular"
+    record.irregularity_badge_class = irreg.get("badge_class") or "good"
+    record.has_neural_ecg = bool((feats.get("neural_ecg_prediction") or {}).get("available"))
 
 
 def get_or_create_user(
@@ -200,10 +346,12 @@ def _load_coeffs(model: CalibrationModel):
 
 def get_active_coeffs(user_id=None):
     """Prioriza modelo pessoal ativo; senão modelo global polinomial."""
-    q = CalibrationModel.query.filter_by(is_active=True)
+    q = CalibrationModel.query.filter_by(is_active=True).filter(
+        CalibrationModel.scope.in_(["personal", "global"])
+    )
     if user_id:
         m = (
-            q.filter_by(user_id=user_id)
+            q.filter_by(user_id=user_id, scope="personal")
             .order_by(CalibrationModel.created_at.desc())
             .first()
         )
@@ -212,7 +360,7 @@ def get_active_coeffs(user_id=None):
             return coeffs
 
     m = (
-        q.filter(CalibrationModel.user_id.is_(None))
+        q.filter(CalibrationModel.user_id.is_(None), CalibrationModel.scope == "global")
         .order_by(CalibrationModel.created_at.desc())
         .first()
     )
@@ -220,6 +368,72 @@ def get_active_coeffs(user_id=None):
     if coeffs:
         return coeffs
     return None
+
+
+def get_active_neural_ecg_weights():
+    """Carrega pesos ativos da rede neural PPG-to-ECG, se já treinada."""
+    m = (
+        CalibrationModel.query.filter_by(is_active=True, scope="neural_ecg")
+        .order_by(CalibrationModel.created_at.desc())
+        .first()
+    )
+    return _load_coeffs(m)
+
+
+def maybe_train_neural_ecg_model(min_pairs: int = 3):
+    """
+    Coleta todas as calibrações pareadas (PPG + ECG) no banco de dados e
+    treina/atualiza a rede neural MLP PPG-to-ECG.
+    """
+    cals = (
+        Calibration.query.filter(Calibration.signal_quality >= 0.3)
+        .order_by(Calibration.created_at.desc())
+        .limit(400)
+        .all()
+    )
+    paired_records = []
+    for c in cals:
+        feats = _parse_features_safe(c.features_json)
+        ecg_val = feats.get("ecg_validation") or {}
+        if not ecg_val.get("ecg_provided"):
+            continue
+        ppg_ibi = feats.get("ppg_ibi_ms") or []
+        ecg_series = ecg_val.get("ecg_series") or {}
+        ecg_rr = ecg_series.get("clean_rr_ms") or []
+        if len(ppg_ibi) >= 3 and len(ecg_rr) >= 3:
+            std_r = float(c.std_red or 1.0)
+            peak_a = float(c.peak_amplitude or 0.35)
+            paired_records.append({
+                "ppg_ibi_ms": ppg_ibi,
+                "ecg_rr_ms": ecg_rr,
+                "sbp": c.ref_systolic,
+                "dbp": c.ref_diastolic,
+                "norm_amp": peak_a / max(1.0, std_r),
+                "pulse_width": float(c.pulse_width or 0.28),
+            })
+
+    if len(paired_records) < min_pairs:
+        return None, len(paired_records)
+
+    weights = train_neural_ppg_to_ecg_model(paired_records, min_pairs=min_pairs)
+    if not weights:
+        return None, len(paired_records)
+
+    CalibrationModel.query.filter_by(scope="neural_ecg", is_active=True).update(
+        {"is_active": False}
+    )
+    model = CalibrationModel(
+        user_id=None,
+        model_type="mlp_ppg_to_ecg",
+        scope="neural_ecg",
+        degree=1,
+        coefficients_json=json.dumps(weights),
+        n_samples=weights.get("n_paired_recordings", len(paired_records)),
+        is_active=True,
+    )
+    db.session.add(model)
+    db.session.commit()
+    return weights, len(paired_records)
 
 
 def resolve_calibration_state(user_name: str):
@@ -411,12 +625,27 @@ def historico():
     calibrations = []
     error_msg = None
     try:
-        measurements = (
-            Measurement.query.order_by(Measurement.created_at.desc()).limit(100).all()
-        )
-        calibrations = (
-            Calibration.query.order_by(Calibration.created_at.desc()).limit(50).all()
-        )
+        if getattr(g, "current_user", None):
+            uid = g.current_user.id
+            measurements = (
+                Measurement.query.filter_by(user_id=uid)
+                .order_by(Measurement.created_at.desc())
+                .limit(100)
+                .all()
+            )
+            calibrations = (
+                Calibration.query.filter_by(user_id=uid)
+                .order_by(Calibration.created_at.desc())
+                .limit(50)
+                .all()
+            )
+        else:
+            measurements = (
+                Measurement.query.order_by(Measurement.created_at.desc()).limit(100).all()
+            )
+            calibrations = (
+                Calibration.query.order_by(Calibration.created_at.desc()).limit(50).all()
+            )
         for m in measurements:
             _attach_ecg_metadata(m)
         for c in calibrations:
@@ -518,6 +747,7 @@ def api_measure():
 
     # HRV/PRV a partir dos picos PPG; ECG opcional para validação profissional
     peaks = features.pop("peak_indices", []) or []
+    ppg_wave_snippet = features.pop("ppg_wave_snippet", []) or []
     variability = build_variability_report(
         peaks=peaks,
         fps=fps,
@@ -553,8 +783,31 @@ def api_measure():
         else dbp_std
     )
 
+    # Triagem automática de irregularidade de pulso + Tradução Neural PPG-to-ECG
+    ecg_clean_rr = ((variability.get("ecg_series") or {}).get("clean_rr_ms")) if variability.get("ecg_provided") else None
+    pulse_irregularity = detect_pulse_irregularity(
+        ppg_ibi_ms=variability.get("ppg_ibi_ms") or [],
+        ecg_rr_ms=ecg_clean_rr,
+    )
+    neural_weights = get_active_neural_ecg_weights()
+    if neural_weights is None:
+        neural_weights, _ = maybe_train_neural_ecg_model()
+
+    neural_ecg_prediction = predict_ecg_from_ppg(
+        ppg_ibi_ms=variability.get("ppg_ibi_ms") or [],
+        features=features,
+        estimated_sbp=sbp,
+        estimated_dbp=dbp,
+        neural_weights=neural_weights,
+        irregularity_report=pulse_irregularity,
+        ppg_wave_snippet=ppg_wave_snippet,
+        fps=fps,
+    )
+
     features["hrv"] = variability.get("prv")
     features["ppg_ibi_ms"] = variability.get("ppg_ibi_ms") or []
+    features["pulse_irregularity"] = pulse_irregularity
+    features["neural_ecg_prediction"] = neural_ecg_prediction
     features["ecg_validation"] = {
         "ecg_provided": variability.get("ecg_provided"),
         "ecg_status": variability.get("ecg_status"),
@@ -615,6 +868,8 @@ def api_measure():
         "status": status,
         "ecg_validation": features["ecg_validation"],
         "bp_confidence": bp_confidence,
+        "pulse_irregularity": pulse_irregularity,
+        "neural_ecg_prediction": neural_ecg_prediction,
     }
 
     try:
@@ -664,6 +919,8 @@ def api_measure():
         "signal_quality": features.get("signal_quality"),
         "variability": variability,
         "bp_confidence": bp_confidence,
+        "pulse_irregularity": pulse_irregularity,
+        "neural_ecg_prediction": neural_ecg_prediction,
         "status": status,
         "model_scope": (coeffs or {}).get("scope") if coeffs else None,
         "model_type": (coeffs or {}).get("model_type") if coeffs else None,
@@ -724,6 +981,7 @@ def api_calibrate():
         }), 400
 
     peaks = features.pop("peak_indices", []) or []
+    ppg_wave_snippet = features.pop("ppg_wave_snippet", []) or []
     variability = build_variability_report(
         peaks=peaks,
         fps=fps,
@@ -734,9 +992,26 @@ def api_calibrate():
         ecg_status=variability.get("ecg_status", "missing"),
         comparison=variability.get("comparison"),
     )
+    ecg_clean_rr = ((variability.get("ecg_series") or {}).get("clean_rr_ms")) if variability.get("ecg_provided") else None
+    pulse_irregularity = detect_pulse_irregularity(
+        ppg_ibi_ms=variability.get("ppg_ibi_ms") or [],
+        ecg_rr_ms=ecg_clean_rr,
+    )
+    neural_ecg_prediction = predict_ecg_from_ppg(
+        ppg_ibi_ms=variability.get("ppg_ibi_ms") or [],
+        features=features,
+        estimated_sbp=ref_systolic,
+        estimated_dbp=ref_diastolic,
+        neural_weights=get_active_neural_ecg_weights(),
+        irregularity_report=pulse_irregularity,
+        ppg_wave_snippet=ppg_wave_snippet,
+        fps=fps,
+    )
 
     features["hrv"] = variability.get("prv")
     features["ppg_ibi_ms"] = variability.get("ppg_ibi_ms") or []
+    features["pulse_irregularity"] = pulse_irregularity
+    features["neural_ecg_prediction"] = neural_ecg_prediction
     features["ecg_validation"] = {
         "ecg_provided": variability.get("ecg_provided"),
         "ecg_status": variability.get("ecg_status"),
@@ -773,6 +1048,17 @@ def api_calibrate():
     coeffs, total = maybe_train_model(user.id)
     trained = coeffs is not None
 
+    neural_info = None
+    if variability.get("ecg_provided"):
+        n_weights, n_paired = maybe_train_neural_ecg_model()
+        if n_weights:
+            neural_info = {
+                "trained": True,
+                "n_paired_recordings": n_paired,
+                "n_beats_learned": n_weights.get("n_beats_learned"),
+                "mae_rr_ms": n_weights.get("mae_rr_ms"),
+            }
+
     # Tenta atualizar modelo global se já houver volume
     global_info = None
     all_n = Calibration.query.filter(Calibration.signal_quality >= 0.3).count()
@@ -796,6 +1082,8 @@ def api_calibrate():
     msg = f"Calibração salva. Total pessoal: {total}."
     if variability.get("ecg_provided"):
         msg += " Validação por ECG registrada."
+    if neural_info:
+        msg += f" Rede neural PPG→ECG atualizada com {neural_info['n_paired_recordings']} pares (MAE {neural_info['mae_rr_ms']} ms)."
     if trained:
         msg += (
             f" Modelo pessoal atualizado "
@@ -862,6 +1150,8 @@ def api_measurement_detail(mid):
             "ecg_series": ecg_val.get("ecg_series") or {},
         },
         "bp_confidence": bp_conf,
+        "pulse_irregularity": feats.get("pulse_irregularity") or {},
+        "neural_ecg_prediction": feats.get("neural_ecg_prediction") or {},
     })
 
 
@@ -893,6 +1183,8 @@ def api_calibration_detail(cid):
             "ecg_series": ecg_val.get("ecg_series") or {},
         },
         "bp_confidence": bp_conf,
+        "pulse_irregularity": feats.get("pulse_irregularity") or {},
+        "neural_ecg_prediction": feats.get("neural_ecg_prediction") or {},
     })
 
 
@@ -925,6 +1217,8 @@ def measurement_pdf(mid):
         "status": "calibrado" if m.estimated_systolic else "sem_calibracao",
         "ecg_validation": ecg_val,
         "bp_confidence": bp_conf,
+        "pulse_irregularity": feats.get("pulse_irregularity") or {},
+        "neural_ecg_prediction": feats.get("neural_ecg_prediction") or {},
     }
     pdf_bytes = build_measurement_pdf(data)
     return send_file(
@@ -1006,6 +1300,26 @@ def api_send_report():
 # ──────────────────────────────────────────────
 # Modelo global polinomial + análise de viés
 # ──────────────────────────────────────────────
+
+@app.route("/api/train-neural-ecg", methods=["POST"])
+def api_train_neural_ecg():
+    """Força treino da rede neural MLP PPG-to-ECG com os pares PPG+ECG do banco."""
+    weights, n_paired = maybe_train_neural_ecg_model(min_pairs=2)
+    if not weights:
+        return jsonify({
+            "ok": False,
+            "n_paired_recordings": n_paired,
+            "error": f"São necessárias pelo menos 2 calibrações pareadas (PPG + ECG) para treinar a rede neural. Atual: {n_paired}.",
+        }), 400
+    return jsonify({
+        "ok": True,
+        "n_paired_recordings": n_paired,
+        "n_beats_learned": weights.get("n_beats_learned"),
+        "mae_rr_ms": weights.get("mae_rr_ms"),
+        "architecture": weights.get("architecture"),
+        "message": f"Rede neural PPG→ECG treinada com {n_paired} gravações pareadas ({weights.get('n_beats_learned')} batimentos).",
+    })
+
 
 @app.route("/api/train-global", methods=["POST"])
 def api_train_global():
@@ -1134,6 +1448,484 @@ def api_bias_report():
         "model_type": m.model_type if m else None,
         "n_samples_model": m.n_samples if m else None,
     })
+
+
+# ──────────────────────────────────────────────
+# Painel do Administrador & Convites de Uso Único
+# ──────────────────────────────────────────────
+
+def _get_admin_secret_fingerprint():
+    env_pw = (os.getenv("ADMIN_PASSWORD") or "").strip()
+    if env_pw:
+        return "env", hashlib.sha256(env_pw.encode("utf-8")).hexdigest()[:20]
+    row = AppSetting.query.get("admin_password_hash")
+    if row and row.value:
+        return "db", hashlib.sha256(row.value.encode("utf-8")).hexdigest()[:20]
+    return None, None
+
+
+def _is_admin_authenticated() -> bool:
+    if not session.get("is_cardiasync_admin"):
+        return False
+    _, fp = _get_admin_secret_fingerprint()
+    if not fp:
+        return False
+    return session.get("admin_pw_fp") == fp
+
+
+def _generate_single_use_invite_code() -> str:
+    for _ in range(30):
+        digits = f"{secrets.randbelow(9000) + 1000}"
+        candidate = f"CS-{digits}"
+        if not InviteCode.query.filter(db.func.upper(InviteCode.code) == candidate).first():
+            return candidate
+    return f"CS-{secrets.token_hex(3).upper()}"
+
+
+@app.route("/admin")
+def admin_page():
+    mode, _ = _get_admin_secret_fingerprint()
+    needs_setup = mode is None
+    is_admin = _is_admin_authenticated()
+    invites = []
+    users = []
+    if is_admin:
+        invites = InviteCode.query.order_by(InviteCode.created_at.desc()).limit(100).all()
+        users = User.query.order_by(User.created_at.desc()).limit(100).all()
+    return render_template(
+        "admin.html",
+        is_admin=is_admin,
+        needs_setup=needs_setup,
+        invites=invites,
+        users=users,
+    )
+
+
+@app.route("/api/admin/setup", methods=["POST"])
+def api_admin_setup():
+    mode, _ = _get_admin_secret_fingerprint()
+    if mode is not None:
+        return jsonify({"ok": False, "error": "A senha mestra já está configurada."}), 400
+    data = request.get_json(silent=True) or {}
+    password = data.get("password") or ""
+    if len(password) < 6:
+        return jsonify({"ok": False, "error": "A senha mestra deve ter pelo menos 6 caracteres."}), 400
+
+    pw_hash = generate_password_hash(password)
+    row = AppSetting(key="admin_password_hash", value=pw_hash)
+    db.session.add(row)
+    db.session.commit()
+
+    _, fp = _get_admin_secret_fingerprint()
+    session["is_cardiasync_admin"] = True
+    session["admin_pw_fp"] = fp
+    session.permanent = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/login", methods=["POST"])
+def api_admin_login():
+    data = request.get_json(silent=True) or {}
+    password = data.get("password") or ""
+    env_pw = (os.getenv("ADMIN_PASSWORD") or "").strip()
+
+    valid = False
+    if env_pw:
+        valid = secrets.compare_digest(password, env_pw)
+    else:
+        row = AppSetting.query.get("admin_password_hash")
+        if row and row.value:
+            valid = check_password_hash(row.value, password)
+
+    if not valid:
+        return jsonify({"ok": False, "error": "Senha mestra do administrador incorreta."}), 401
+
+    _, fp = _get_admin_secret_fingerprint()
+    session["is_cardiasync_admin"] = True
+    session["admin_pw_fp"] = fp
+    session.permanent = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/logout", methods=["POST"])
+def api_admin_logout():
+    session.pop("is_cardiasync_admin", None)
+    session.pop("admin_pw_fp", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/invites", methods=["POST"])
+def api_admin_create_invite():
+    if not _is_admin_authenticated():
+        return jsonify({"ok": False, "error": "Acesso restrito ao administrador."}), 401
+
+    data = request.get_json(silent=True) or {}
+    recipient = (data.get("recipient") or "").strip() or None
+    raw_custom = (data.get("custom_code") or "").strip().upper()
+    expires_hours = int(data.get("expires_hours") or 0)
+
+    if raw_custom:
+        cleaned = "".join(ch for ch in raw_custom if ch.isalnum() or ch in ("-", "_"))[:28]
+        if len(cleaned) < 3:
+            return jsonify({"ok": False, "error": "O código personalizado deve ter ao menos 3 caracteres."}), 400
+        if InviteCode.query.filter(db.func.upper(InviteCode.code) == cleaned).first():
+            return jsonify({"ok": False, "error": f"O código '{cleaned}' já existe. Escolha outro ou deixe em branco."}), 409
+        code = cleaned
+    else:
+        code = _generate_single_use_invite_code()
+
+    expires_at = None
+    if expires_hours > 0:
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_hours)
+
+    inv = InviteCode(
+        code=code,
+        recipient_label=recipient,
+        status="active",
+        expires_at=expires_at,
+    )
+    db.session.add(inv)
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "invite": {
+            "id": inv.id,
+            "code": inv.code,
+            "recipient_label": inv.recipient_label,
+            "status": inv.status,
+        },
+    })
+
+
+@app.route("/api/admin/invites/<int:iid>/revoke", methods=["POST"])
+def api_admin_revoke_invite(iid):
+    if not _is_admin_authenticated():
+        return jsonify({"ok": False, "error": "Acesso restrito ao administrador."}), 401
+    inv = InviteCode.query.get_or_404(iid)
+    if inv.status == "used":
+        return jsonify({"ok": False, "error": "Este convite já foi utilizado e não pode ser cancelado."}), 400
+    inv.status = "revoked"
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/users/<int:uid>/<action>", methods=["POST"])
+def api_admin_toggle_user(uid, action):
+    if not _is_admin_authenticated():
+        return jsonify({"ok": False, "error": "Acesso restrito ao administrador."}), 401
+    user = User.query.get_or_404(uid)
+    if action == "block":
+        user.is_blocked = True
+        for s in user.device_sessions:
+            s.revoked = True
+    elif action == "unblock":
+        user.is_blocked = False
+    else:
+        return jsonify({"ok": False, "error": "Ação inválida."}), 400
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+# ──────────────────────────────────────────────
+# Autenticação Persistente por Aparelho & Recuperação de Senha
+# ──────────────────────────────────────────────
+
+@app.route("/acesso")
+def acesso_page():
+    if getattr(g, "current_user", None):
+        return redirect(url_for("index"))
+    return render_template("acesso.html")
+
+
+@app.route("/seguranca")
+def seguranca_page():
+    return render_template("seguranca.html")
+
+
+@app.route("/api/auth/register", methods=["POST"])
+def api_auth_register():
+    data = request.get_json(silent=True) or {}
+    invite_code = (data.get("invite_code") or "").strip().upper()
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower() or None
+    password = data.get("password") or ""
+
+    if not invite_code:
+        return jsonify({
+            "ok": False,
+            "error": "Código de convite obrigatório. Solicite um convite de uso único ao administrador.",
+        }), 403
+
+    invite = InviteCode.query.filter(db.func.upper(InviteCode.code) == invite_code).first()
+    if not invite:
+        return jsonify({
+            "ok": False,
+            "error": "Código de convite inválido. Verifique com o administrador do CardiaSync.",
+        }), 403
+    if invite.status == "used":
+        return jsonify({
+            "ok": False,
+            "error": "Este código de convite já foi utilizado em outro aparelho. Cada convite é de uso único.",
+        }), 403
+    if invite.status == "revoked":
+        return jsonify({
+            "ok": False,
+            "error": "Este código de convite foi cancelado pelo administrador.",
+        }), 403
+    if invite.expires_at:
+        exp = invite.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > exp:
+            return jsonify({
+                "ok": False,
+                "error": "Este código de convite expirou. Solicite um novo código ao administrador.",
+            }), 403
+
+    if len(name) < 2:
+        return jsonify({"ok": False, "error": "Informe seu nome (mínimo 2 caracteres)."}), 400
+    if len(password) < 4:
+        return jsonify({"ok": False, "error": "A senha deve ter pelo menos 4 caracteres."}), 400
+
+    # Verifica se já existe usuário protegido com este e-mail ou nome (sem queimar o convite)
+    existing = None
+    if email:
+        existing = User.query.filter(db.func.lower(User.email) == email).first()
+    if not existing:
+        existing = User.query.filter(db.func.lower(User.name) == name.lower()).first()
+
+    if existing and existing.password_hash:
+        return jsonify({
+            "ok": False,
+            "error": "Já existe uma senha cadastrada para este nome/e-mail. Use a aba 'Já Tenho Senha' ou 'Recuperar'.",
+        }), 409
+
+    rescue_code = _generate_rescue_code()
+    if existing:
+        user = existing
+        user.name = name
+        if email:
+            user.email = email
+    else:
+        user = User(name=name, email=email)
+        db.session.add(user)
+
+    user.password_hash = generate_password_hash(password)
+    user.recovery_code_hash = generate_password_hash(rescue_code)
+    user.is_blocked = False
+    db.session.flush()
+
+    # Consome o convite de uso único definitivamente
+    invite.status = "used"
+    invite.used_at = datetime.now(timezone.utc)
+    invite.used_by_user_id = user.id
+    invite.used_device_label = (request.headers.get("User-Agent") or "Celular")[:110]
+    db.session.commit()
+
+    raw_token = _issue_device_session(user, request.headers.get("User-Agent", ""))
+    resp = make_response(jsonify({
+        "ok": True,
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "device_token": raw_token,
+        "recovery_code": rescue_code,
+    }))
+    return _attach_device_cookie(resp, raw_token)
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    data = request.get_json(silent=True) or {}
+    identifier = (data.get("identifier") or "").strip()
+    password = data.get("password") or ""
+
+    user = _find_user_by_identifier(identifier)
+    if not user or not user.password_hash or not check_password_hash(user.password_hash, password):
+        return jsonify({"ok": False, "error": "Nome/e-mail ou senha incorretos."}), 401
+    if getattr(user, "is_blocked", False):
+        return jsonify({"ok": False, "error": "Acesso suspenso pelo administrador."}), 403
+
+    raw_token = _issue_device_session(user, request.headers.get("User-Agent", ""))
+    resp = make_response(jsonify({
+        "ok": True,
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "device_token": raw_token,
+    }))
+    return _attach_device_cookie(resp, raw_token)
+
+
+@app.route("/api/auth/restore-device", methods=["POST"])
+def api_auth_restore_device():
+    data = request.get_json(silent=True) or {}
+    raw_token = (data.get("device_token") or "").strip()
+    if not raw_token:
+        return jsonify({"ok": False, "error": "Token ausente."}), 400
+
+    sess = DeviceSession.query.filter_by(
+        token_hash=_hash_token(raw_token),
+        revoked=False,
+    ).first()
+    if not sess or not sess.user or getattr(sess.user, "is_blocked", False):
+        return jsonify({"ok": False, "error": "Vínculo inválido ou revogado."}), 401
+
+    sess.last_seen_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    resp = make_response(jsonify({
+        "ok": True,
+        "user": {"id": sess.user.id, "name": sess.user.name},
+    }))
+    return _attach_device_cookie(resp, raw_token)
+
+
+@app.route("/api/auth/request-reset", methods=["POST"])
+def api_auth_request_reset():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify({"ok": False, "error": "Informe um e-mail válido."}), 400
+
+    user = User.query.filter(db.func.lower(User.email) == email).first()
+    if not user or not user.password_hash:
+        return jsonify({
+            "ok": False,
+            "error": "Nenhuma conta com senha encontrada para este e-mail.",
+        }), 404
+
+    code = f"{secrets.randbelow(900000) + 100000}"
+    user.reset_code_hash = generate_password_hash(code)
+    user.reset_code_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    db.session.commit()
+
+    body = (
+        f"Olá, {user.name}!\n\n"
+        f"Seu código de recuperação de senha do CardiaSync é: {code}\n"
+        f"Este código expira em 15 minutos.\n\n"
+        f"Se você não solicitou esta alteração, ignore este e-mail."
+    )
+    ok, msg = send_email_plain(email, "Código de Recuperação — CardiaSync", body)
+    if not ok:
+        return jsonify({
+            "ok": False,
+            "error": f"{msg} Use a Opção 2 (Código de Resgate Offline) abaixo.",
+        }), 503
+
+    return jsonify({"ok": True, "message": "Código de 6 dígitos enviado para seu e-mail!"})
+
+
+@app.route("/api/auth/verify-reset", methods=["POST"])
+def api_auth_verify_reset():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    code = (data.get("code") or "").strip()
+    new_password = data.get("new_password") or ""
+
+    if len(new_password) < 4:
+        return jsonify({"ok": False, "error": "A nova senha deve ter pelo menos 4 caracteres."}), 400
+
+    user = User.query.filter(db.func.lower(User.email) == email).first()
+    if not user or not user.reset_code_hash or not user.reset_code_expires:
+        return jsonify({"ok": False, "error": "Solicite primeiro o envio do código por e-mail."}), 400
+
+    expires = user.reset_code_expires
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires:
+        return jsonify({"ok": False, "error": "Código expirado. Solicite um novo código."}), 400
+
+    if not check_password_hash(user.reset_code_hash, code):
+        return jsonify({"ok": False, "error": "Código de 6 dígitos incorreto."}), 401
+
+    user.password_hash = generate_password_hash(new_password)
+    user.reset_code_hash = None
+    user.reset_code_expires = None
+    db.session.commit()
+
+    raw_token = _issue_device_session(user, request.headers.get("User-Agent", ""))
+    resp = make_response(jsonify({
+        "ok": True,
+        "device_token": raw_token,
+    }))
+    return _attach_device_cookie(resp, raw_token)
+
+
+@app.route("/api/auth/recover-rescue", methods=["POST"])
+def api_auth_recover_rescue():
+    data = request.get_json(silent=True) or {}
+    identifier = (data.get("identifier") or "").strip()
+    rescue_code = (data.get("recovery_code") or "").strip().upper()
+    new_password = data.get("new_password") or ""
+
+    if len(new_password) < 4:
+        return jsonify({"ok": False, "error": "A nova senha deve ter pelo menos 4 caracteres."}), 400
+
+    user = _find_user_by_identifier(identifier)
+    if not user or not user.recovery_code_hash:
+        return jsonify({"ok": False, "error": "Usuário não encontrado ou sem código de resgate."}), 404
+
+    if not check_password_hash(user.recovery_code_hash, rescue_code):
+        return jsonify({"ok": False, "error": "Código de resgate inválido."}), 401
+
+    new_rescue = _generate_rescue_code()
+    user.password_hash = generate_password_hash(new_password)
+    user.recovery_code_hash = generate_password_hash(new_rescue)
+    db.session.commit()
+
+    raw_token = _issue_device_session(user, request.headers.get("User-Agent", ""))
+    resp = make_response(jsonify({
+        "ok": True,
+        "device_token": raw_token,
+        "new_recovery_code": new_rescue,
+    }))
+    return _attach_device_cookie(resp, raw_token)
+
+
+@app.route("/api/auth/update-security", methods=["POST"])
+def api_auth_update_security():
+    user = getattr(g, "current_user", None)
+    if not user:
+        return jsonify({"ok": False, "error": "Não autenticado."}), 401
+
+    data = request.get_json(silent=True) or {}
+    current_password = data.get("current_password") or ""
+    new_email = (data.get("email") or "").strip().lower() or None
+    new_password = data.get("new_password") or ""
+
+    if not user.password_hash or not check_password_hash(user.password_hash, current_password):
+        return jsonify({"ok": False, "error": "Senha atual incorreta."}), 401
+
+    if new_email:
+        user.email = new_email
+    if new_password:
+        if len(new_password) < 4:
+            return jsonify({"ok": False, "error": "A nova senha deve ter pelo menos 4 caracteres."}), 400
+        user.password_hash = generate_password_hash(new_password)
+
+    db.session.commit()
+    return jsonify({"ok": True, "message": "Configurações de segurança atualizadas!"})
+
+
+@app.route("/api/auth/regenerate-rescue", methods=["POST"])
+def api_auth_regenerate_rescue():
+    user = getattr(g, "current_user", None)
+    if not user:
+        return jsonify({"ok": False, "error": "Não autenticado."}), 401
+
+    new_rescue = _generate_rescue_code()
+    user.recovery_code_hash = generate_password_hash(new_rescue)
+    db.session.commit()
+    return jsonify({"ok": True, "recovery_code": new_rescue})
+
+
+@app.route("/api/auth/unlink-device", methods=["POST"])
+def api_auth_unlink_device():
+    sess = getattr(g, "device_session", None)
+    if sess:
+        sess.revoked = True
+        db.session.commit()
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(DEVICE_COOKIE_NAME, path="/")
+    return resp
 
 
 @app.route("/vies")

@@ -9,7 +9,7 @@
   </div>
   {% endif %}
   <h2>Histórico de Medições</h2>
-  <p class="hint" style="margin-bottom:0.75rem;">Clique em <strong>👁️ Sinal</strong> para visualizar o traçado ECG, a curva PPG e o índice de segurança clínica.</p>
+  <p class="hint" style="margin-bottom:0.75rem;">Clique em <strong>👁️ Sinal</strong> para abrir o osciloscópio neural PPG-to-ECG, a triagem de irregularidade de pulso e o comparativo ECG × PPG.</p>
   <div class="table-wrapper">
     <table class="data-table">
       <thead>
@@ -19,9 +19,9 @@
           <th>FC</th>
           <th>Sistólica</th>
           <th>Diastólica</th>
-          <th>Qualidade</th>
+          <th>Triagem Ritmo</th>
           <th>Validação ECG</th>
-          <th>Sinal / ECG</th>
+          <th>Sinal / Neural</th>
           <th>Condição</th>
           <th>PDF</th>
         </tr>
@@ -42,7 +42,11 @@
               {{ m.estimated_diastolic }}{% if m.dbp_std %} <small style="color:var(--muted);">(±{{ '%.0f'|format(m.dbp_std) }})</small>{% endif %}
             {% else %}—{% endif %}
           </td>
-          <td>{{ '%.0f'|format(m.signal_quality * 100) if m.signal_quality else '—' }}%</td>
+          <td>
+            <span class="badge {{ m.irregularity_badge_class or 'good' }}" style="white-space:nowrap;">
+              {{ m.irregularity_label or 'Ritmo Regular' }}
+            </span>
+          </td>
           <td>
             <span class="badge {{ m.ecg_badge_class or 'medium' }}" style="white-space:nowrap;">
               {{ m.ecg_status_label or 'Sem ECG' }}
@@ -113,25 +117,35 @@
 <div id="signalModal" class="ecg-modal" hidden>
   <div class="ecg-modal-content card">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
-      <h3 id="modalSignalTitle" style="margin:0;color:#60a5fa;">Detalhes do Sinal ECG × PPG</h3>
+      <h3 id="modalSignalTitle" style="margin:0;color:#60a5fa;">Detalhes do Sinal Neural & ECG</h3>
       <button type="button" id="closeSignalModal" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.3rem 0.75rem;">✕ Fechar</button>
     </div>
     <p id="modalSignalMeta" class="hint" style="margin-bottom:0.8rem;font-size:0.85rem;"></p>
+
+    <div id="modalIrregContainer" style="margin-bottom:0.85rem;"></div>
+
+    <div class="ecg-canvas-box" id="modalNeuralBox" style="margin-bottom:0.65rem;border-color:rgba(16,185,129,0.4);">
+      <div class="ecg-canvas-header">
+        <span>🧠 Previsão Neural de ECG (PPG-to-ECG · Experimental)</span>
+      </div>
+      <canvas id="modalNeuralCanvas" style="width:100%;height:215px;display:block;"></canvas>
+    </div>
+    <div id="modalNeuralTelContainer" style="margin-bottom:0.85rem;"></div>
 
     <div id="modalSafetyContainer" style="margin-bottom:0.85rem;"></div>
 
     <div class="ecg-canvas-box" id="modalEcgWaveBox" style="margin-bottom:0.85rem;">
       <div class="ecg-canvas-header">
-        <span>🫀 Traçado Eletrocardiográfico (ECG P-QRS-T)</span>
+        <span>🫀 Traçado Eletrocardiográfico Real Anexado (ECG P-QRS-T)</span>
       </div>
-      <canvas id="modalEcgWaveCanvas" style="width:100%;height:155px;display:block;"></canvas>
+      <canvas id="modalEcgWaveCanvas" style="width:100%;height:150px;display:block;"></canvas>
     </div>
 
     <div class="ecg-canvas-box">
       <div class="ecg-canvas-header">
         <span>📈 Comparativo Batimento a Batimento: ECG × Câmera (PPG)</span>
       </div>
-      <canvas id="modalCompareCanvas" style="width:100%;height:180px;display:block;"></canvas>
+      <canvas id="modalCompareCanvas" style="width:100%;height:175px;display:block;"></canvas>
     </div>
   </div>
 </div>
@@ -145,6 +159,10 @@
   const closeBtn = document.getElementById("closeSignalModal");
   const titleEl = document.getElementById("modalSignalTitle");
   const metaEl = document.getElementById("modalSignalMeta");
+  const irregEl = document.getElementById("modalIrregContainer");
+  const neuralBox = document.getElementById("modalNeuralBox");
+  const neuralCanvas = document.getElementById("modalNeuralCanvas");
+  const neuralTelEl = document.getElementById("modalNeuralTelContainer");
   const safetyEl = document.getElementById("modalSafetyContainer");
   const waveBox = document.getElementById("modalEcgWaveBox");
   const waveCanvas = document.getElementById("modalEcgWaveCanvas");
@@ -161,6 +179,8 @@
       const id = btn.dataset.id;
       titleEl.textContent = "Carregando sinal…";
       metaEl.textContent = "";
+      irregEl.innerHTML = "";
+      neuralTelEl.innerHTML = "";
       safetyEl.innerHTML = "";
       modal.hidden = false;
 
@@ -181,8 +201,22 @@
 
         const v = data.variability || {};
         const conf = data.bp_confidence || {};
+        const irreg = data.pulse_irregularity || {};
+        const neural = data.neural_ecg_prediction || {};
 
         if (window.CardiaSyncECG) {
+          if (irreg && irreg.status) {
+            irregEl.innerHTML = window.CardiaSyncECG.buildIrregularityHtml(irreg);
+          }
+
+          if (neural && neural.available) {
+            neuralBox.hidden = false;
+            window.CardiaSyncECG.renderNeuralEcgPredictionCanvas(neuralCanvas, neural);
+            neuralTelEl.innerHTML = window.CardiaSyncECG.buildNeuralTelemetryHtml(neural);
+          } else {
+            neuralBox.hidden = true;
+          }
+
           safetyEl.innerHTML = window.CardiaSyncECG.buildSafetyHtml(conf, v);
 
           const ecgSeries = v.ecg_series || {};

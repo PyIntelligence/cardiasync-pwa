@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Segurança do Aparelho — CardiaSync{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2 style="font-size:1.3rem;margin-bottom:0.35rem;">🔒 Segurança & Vínculo do Aparelho</h2>
+  <p class="hint">
+    Este celular está <strong>vinculado permanentemente</strong> à conta de <strong>{{ current_user.name if current_user else 'Usuário' }}</strong>. A senha não será solicitada ao abrir o aplicativo, exceto se você apagá-lo do celular.
+  </p>
+
+  <div id="secMsg" style="display:none;padding:0.75rem;border-radius:10px;margin-bottom:1rem;font-size:0.86rem;"></div>
+
+  <div style="background:#0f172a;border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1.1rem;">
+    <h3 style="font-size:1rem;color:#93c5fd;margin-bottom:0.65rem;">Alterar Senha ou E-mail de Recuperação</h3>
+    <form id="formUpdateSecurity">
+      <div class="form-row">
+        <label for="secEmail">E-mail de recuperação</label>
+        <input type="email" id="secEmail" value="{{ current_user.email or '' }}" placeholder="seuemail@exemplo.com" />
+      </div>
+      <div class="form-row">
+        <label for="secCurrentPass">Senha atual (obrigatória para alterar)</label>
+        <input type="password" id="secCurrentPass" required placeholder="Digite sua senha atual" />
+      </div>
+      <div class="form-row">
+        <label for="secNewPass">Nova senha (deixe em branco para manter a atual)</label>
+        <input type="password" id="secNewPass" minlength="4" placeholder="Nova senha (mín. 4 caracteres)" />
+      </div>
+      <button type="submit" class="btn primary" style="width:100%;">Salvar Alterações</button>
+    </form>
+  </div>
+
+  <div style="background:#0f172a;border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1.1rem;">
+    <h3 style="font-size:1rem;color:#93c5fd;margin-bottom:0.4rem;">Gerar Novo Código de Resgate Offline</h3>
+    <p style="color:var(--muted);font-size:0.83rem;margin-bottom:0.65rem;">
+      Se você perdeu o código de resgate anterior, gere um novo código abaixo e guarde em local seguro.
+    </p>
+    <button type="button" id="btnNewRescue" class="btn" style="width:100%;background:#1e293b;border:1px solid #475569;color:#f1f5f9;">
+      🔑 Gerar Novo Código de Resgate
+    </button>
+    <div id="newRescueResult" style="display:none;margin-top:0.75rem;text-align:center;padding:0.75rem;border:1px dashed #60a5fa;border-radius:10px;">
+      <div style="font-size:0.78rem;color:var(--muted);">Novo Código de Resgate:</div>
+      <div id="newRescueText" style="font-family:monospace;font-size:1.25rem;font-weight:800;color:#60a5fa;margin-top:0.25rem;"></div>
+    </div>
+  </div>
+
+  <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:12px;padding:1rem;">
+    <h3 style="font-size:0.98rem;color:#fca5a5;margin-bottom:0.35rem;">Desvincular Este Celular</h3>
+    <p style="color:var(--muted);font-size:0.82rem;margin-bottom:0.65rem;">
+      Use apenas se for emprestar, vender ou formatar este aparelho. O app voltará a pedir a senha imediatamente.
+    </p>
+    <button type="button" id="btnUnlinkDevice" class="btn" style="width:100%;background:#dc2626;color:#fff;">
+      Desvincular Aparelho Agora
+    </button>
+  </div>
+
+  <div style="background:#0f172a;border:1px solid rgba(59,130,246,0.35);border-radius:12px;padding:1rem;margin-top:1.1rem;">
+    <h3 style="font-size:0.98rem;color:#93c5fd;margin-bottom:0.35rem;">🛡️ Painel do Administrador</h3>
+    <p style="color:var(--muted);font-size:0.82rem;margin-bottom:0.65rem;">
+      Gere convites de uso único para autorizar novos celulares (como o do Dr. Milton) ou revogue acessos.
+    </p>
+    <a href="{{ url_for('admin_page') }}" class="btn primary" style="display:block;text-align:center;text-decoration:none;">
+      Abrir Painel de Convites
+    </a>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const secMsg = document.getElementById("secMsg");
+  function showSecMsg(txt, ok) {
+    secMsg.style.display = "block";
+    secMsg.style.background = ok ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)";
+    secMsg.style.border = ok ? "1px solid rgba(34,197,94,0.45)" : "1px solid rgba(239,68,68,0.45)";
+    secMsg.style.color = ok ? "#bbf7d0" : "#fecaca";
+    secMsg.textContent = txt;
+  }
+
+  document.getElementById("formUpdateSecurity").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const res = await fetch("/api/auth/update-security", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("secEmail").value.trim(),
+        current_password: document.getElementById("secCurrentPass").value,
+        new_password: document.getElementById("secNewPass").value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      showSecMsg(data.error || "Erro ao atualizar segurança.", false);
+      return;
+    }
+    document.getElementById("secCurrentPass").value = "";
+    document.getElementById("secNewPass").value = "";
+    showSecMsg(data.message || "Dados atualizados com sucesso!", true);
+  });
+
+  document.getElementById("btnNewRescue").addEventListener("click", async () => {
+    const res = await fetch("/api/auth/regenerate-rescue", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      showSecMsg(data.error || "Não foi possível gerar novo código.", false);
+      return;
+    }
+    document.getElementById("newRescueText").textContent = data.recovery_code;
+    document.getElementById("newRescueResult").style.display = "block";
+    showSecMsg("Novo código de resgate gerado! Anote ou tire print.", true);
+  });
+
+  document.getElementById("btnUnlinkDevice").addEventListener("click", async () => {
+    if (!confirm("Deseja realmente desvincular este celular? A senha será exigida novamente.")) return;
+    await fetch("/api/auth/unlink-device", { method: "POST" });
+    if (window.CardiaSyncAuth) window.CardiaSyncAuth.clearToken();
+    window.location.replace("/acesso");
+  });
+</script>
+{% endblock %}

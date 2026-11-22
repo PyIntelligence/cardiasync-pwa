@@ -109,3 +109,39 @@ def send_whatsapp_notification(
     except Exception as e:
         logger.exception("Falha WhatsApp")
         return False, f"Erro WhatsApp: {e}"
+
+
+def send_email_plain(
+    to_email: str,
+    subject: str,
+    body_text: str,
+) -> tuple[bool, str]:
+    """Envia e-mail simples em texto (ex.: código de recuperação de senha)."""
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASSWORD")
+    from_addr = os.getenv("SMTP_FROM") or user
+
+    if not all([host, user, password, from_addr]):
+        return False, "E-mail (SMTP) ainda não configurado no servidor."
+
+    if not to_email or "@" not in to_email:
+        return False, "E-mail de destino inválido."
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = from_addr
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.starttls()
+            server.login(user, password)
+            server.sendmail(from_addr, [to_email], msg.as_string())
+
+        return True, "Código enviado para o e-mail cadastrado."
+    except Exception as e:
+        logger.exception("Falha ao enviar e-mail de recuperação")
+        return False, f"Erro ao enviar e-mail: {e}"

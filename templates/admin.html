@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}" />
+  <title>Painel do Administrador — CardiaSync</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <style>
+    .adm-wrap {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 1.25rem 1rem 3rem;
+    }
+    .adm-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+    }
+    .adm-top h1 {
+      font-size: 1.45rem;
+      color: #60a5fa;
+    }
+    .adm-field {
+      margin-bottom: 0.85rem;
+    }
+    .adm-field label {
+      display: block;
+      font-size: 0.84rem;
+      color: #cbd5e1;
+      margin-bottom: 0.3rem;
+      font-weight: 500;
+    }
+    .adm-field input, .adm-field select {
+      width: 100%;
+      padding: 0.7rem 0.85rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      font-size: 0.96rem;
+    }
+    .btn-primary-adm {
+      width: 100%;
+      padding: 0.82rem 1rem;
+      border: none;
+      border-radius: 12px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 0.98rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-primary-adm:hover { background: var(--primary-hover); }
+    .btn-wa {
+      padding: 0.55rem 0.85rem;
+      border: none;
+      border-radius: 9px;
+      background: #16a34a;
+      color: #fff;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-wa:hover { background: #15803d; }
+    .btn-sm {
+      padding: 0.45rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-danger-sm {
+      padding: 0.45rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid rgba(239, 68, 68, 0.45);
+      background: rgba(239, 68, 68, 0.14);
+      color: #fca5a5;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .badge-active {
+      background: rgba(34, 197, 94, 0.16);
+      color: #86efac;
+      border: 1px solid rgba(34, 197, 94, 0.4);
+    }
+    .badge-used {
+      background: rgba(59, 130, 246, 0.16);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
+    .badge-revoked {
+      background: rgba(239, 68, 68, 0.16);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .item-card {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    .code-mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: #fde68a;
+      letter-spacing: 0.06em;
+    }
+    .alert-box {
+      padding: 0.75rem 0.9rem;
+      border-radius: 10px;
+      font-size: 0.86rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    .alert-box.ok {
+      display: block;
+      background: rgba(34, 197, 94, 0.15);
+      border: 1px solid rgba(34, 197, 94, 0.45);
+      color: #bbf7d0;
+    }
+    .alert-box.err {
+      display: block;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.45);
+      color: #fecaca;
+    }
+  </style>
+</head>
+<body>
+  <main class="adm-wrap">
+    <div class="adm-top">
+      <div>
+        <h1>🛡️ Painel do Administrador</h1>
+        <p style="color:var(--muted);font-size:0.84rem;">Controle total de convites de uso único e aparelhos autorizados</p>
+      </div>
+      <div style="display:flex;gap:0.5rem;">
+        <a href="{{ url_for('index') }}" class="btn-sm" style="text-decoration:none;">← Voltar ao App</a>
+        {% if is_admin %}
+        <button type="button" id="btnAdminLogout" class="btn-danger-sm">Sair do Admin</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <div id="admMsg" class="alert-box"></div>
+
+    {% if not is_admin %}
+      {% if needs_setup %}
+      <!-- PRIMEIRA CONFIGURAÇÃO DA SENHA MESTRA -->
+      <section class="card">
+        <h2 style="font-size:1.15rem;margin-bottom:0.4rem;">🔐 Definir Senha Mestra do Administrador</h2>
+        <p style="color:var(--muted);font-size:0.86rem;margin-bottom:1rem;">
+          Como esta é a primeira vez que você abre o painel administrativo, crie agora sua <strong>Senha Mestra</strong>. Só você poderá gerar convites de uso único para liberar o app para outras pessoas (como o Dr. Milton).
+        </p>
+        <form id="formAdminSetup">
+          <div class="adm-field">
+            <label for="setupAdminPass">Senha Mestra do Administrador (mín. 6 caracteres) *</label>
+            <input type="password" id="setupAdminPass" required minlength="6" placeholder="Crie uma senha forte só sua" />
+          </div>
+          <div class="adm-field">
+            <label for="setupAdminConfirm">Confirme a Senha Mestra *</label>
+            <input type="password" id="setupAdminConfirm" required minlength="6" placeholder="Repita a senha mestra" />
+          </div>
+          <button type="submit" class="btn-primary-adm">Salvar Senha Mestra e Entrar</button>
+        </form>
+      </section>
+      {% else %}
+      <!-- LOGIN DO ADMINISTRADOR -->
+      <section class="card">
+        <h2 style="font-size:1.15rem;margin-bottom:0.4rem;">🔑 Acesso Restrito ao Administrador</h2>
+        <p style="color:var(--muted);font-size:0.86rem;margin-bottom:1rem;">
+          Digite sua <strong>Senha Mestra</strong> para gerar convites de uso único e gerenciar quem pode usar o CardiaSync.
+        </p>
+        <form id="formAdminLogin">
+          <div class="adm-field">
+            <label for="adminLoginPass">Senha Mestra *</label>
+            <input type="password" id="adminLoginPass" required placeholder="Sua senha mestra" autocomplete="current-password" />
+          </div>
+          <button type="submit" class="btn-primary-adm">Entrar no Painel</button>
+        </form>
+      </section>
+      {% endif %}
+    {% else %}
+      <!-- PAINEL ADMINISTRATIVO AUTENTICADO -->
+      <section class="card" style="margin-bottom:1.25rem;">
+        <h2 style="font-size:1.15rem;margin-bottom:0.35rem;">🎟️ Gerar Novo Convite de Uso Único</h2>
+        <p style="color:var(--muted);font-size:0.84rem;margin-bottom:1rem;">
+          Cada código gerado libera <strong>apenas 1 aparelho</strong>. Depois de usado, o código expira automaticamente.
+        </p>
+
+        <form id="formCreateInvite">
+          <div class="adm-field">
+            <label for="invRecipient">Para quem é este convite? (opcional)</label>
+            <input type="text" id="invRecipient" placeholder="Ex.: Dr. Milton" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+            <div class="adm-field">
+              <label for="invCustomCode">Código (opcional)</label>
+              <input type="text" id="invCustomCode" placeholder="Auto (ex.: CS-8492)" style="text-transform:uppercase;" />
+            </div>
+            <div class="adm-field">
+              <label for="invExpires">Validade</label>
+              <select id="invExpires">
+                <option value="0">Sem prazo (até ser usado)</option>
+                <option value="24">24 horas</option>
+                <option value="168" selected>7 dias</option>
+                <option value="720">30 dias</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" class="btn-primary-adm">✨ Criar Convite de Uso Único</button>
+        </form>
+
+        <!-- RESULTADO DO CONVITE RECÉM-CRIADO -->
+        <div id="newInviteBox" style="display:none;margin-top:1rem;padding:1rem;background:#0f172a;border:1px dashed #22c55e;border-radius:12px;">
+          <div style="font-size:0.82rem;color:#86efac;font-weight:600;">✅ Convite de Uso Único Pronto!</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin:0.5rem 0;flex-wrap:wrap;">
+            <span class="code-mono" id="createdCodeText">CS-0000</span>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+              <button type="button" id="btnCopyCreatedWA" class="btn-wa">📲 Copiar Mensagem p/ WhatsApp</button>
+              <button type="button" id="btnCopyCreatedCode" class="btn-sm">📋 Copiar Código</button>
+            </div>
+          </div>
+          <div style="font-size:0.78rem;color:var(--muted);">
+            Envie no WhatsApp da pessoa. Assim que ela digitar esse código e criar a senha dela, o código será marcado como <strong>Usado</strong> e não funcionará em nenhum outro celular.
+          </div>
+        </div>
+      </section>
+
+      <!-- LISTA DE CONVITES -->
+      <section class="card" style="margin-bottom:1.25rem;">
+        <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">📋 Convites Gerados ({{ invites|length }})</h2>
+        {% if not invites %}
+          <p style="color:var(--muted);font-size:0.86rem;">Nenhum convite gerado ainda. Crie o primeiro acima (ex.: para você mesmo ou para o Dr. Milton).</p>
+        {% else %}
+          {% for inv in invites %}
+          <div class="item-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <span class="code-mono">{{ inv.code }}</span>
+                {% if inv.recipient_label %}
+                  <span style="color:#e2e8f0;font-weight:600;margin-left:0.5rem;">— {{ inv.recipient_label }}</span>
+                {% endif %}
+              </div>
+              <div>
+                {% if inv.status == 'active' %}
+                  <span class="badge badge-active">Disponível</span>
+                {% elif inv.status == 'used' %}
+                  <span class="badge badge-used">Usado</span>
+                {% else %}
+                  <span class="badge badge-revoked">Cancelado</span>
+                {% endif %}
+              </div>
+            </div>
+
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:0.4rem;">
+              Criado em {{ inv.created_at.strftime('%d/%m/%Y %H:%M') if inv.created_at else '—' }}
+              {% if inv.status == 'used' %}
+                • Ativado por <strong>{{ inv.used_by_user.name if inv.used_by_user else 'Usuário' }}</strong>
+                em {{ inv.used_at.strftime('%d/%m/%Y %H:%M') if inv.used_at else '' }}
+              {% endif %}
+            </div>
+
+            {% if inv.status == 'active' %}
+            <div style="display:flex;gap:0.5rem;margin-top:0.65rem;flex-wrap:wrap;">
+              <button type="button" class="btn-wa btn-copy-wa-row" data-code="{{ inv.code }}" data-recipient="{{ inv.recipient_label or '' }}">
+                📲 Copiar Mensagem WhatsApp
+              </button>
+              <button type="button" class="btn-danger-sm btn-revoke-invite" data-id="{{ inv.id }}">
+                Cancelar Convite
+              </button>
+            </div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        {% endif %}
+      </section>
+
+      <!-- USUÁRIOS E APARELHOS VINCULADOS -->
+      <section class="card">
+        <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">📱 Usuários & Aparelhos Autorizados ({{ users|length }})</h2>
+        {% if not users %}
+          <p style="color:var(--muted);font-size:0.86rem;">Nenhum usuário ativou um convite ainda.</p>
+        {% else %}
+          {% for u in users %}
+          {% set active_devices = u.device_sessions | selectattr('revoked', 'equalto', False) | list %}
+          <div class="item-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <strong style="color:#f1f5f9;font-size:0.98rem;">{{ u.name }}</strong>
+                {% if u.email %}
+                  <span style="color:var(--muted);font-size:0.82rem;">({{ u.email }})</span>
+                {% endif %}
+              </div>
+              <div>
+                {% if u.is_blocked %}
+                  <span class="badge badge-revoked">Bloqueado</span>
+                {% else %}
+                  <span class="badge badge-active">{{ active_devices|length }} celular(es) ativo(s)</span>
+                {% endif %}
+              </div>
+            </div>
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:0.35rem;">
+              Cadastro: {{ u.created_at.strftime('%d/%m/%Y %H:%M') if u.created_at else '—' }}
+            </div>
+            <div style="margin-top:0.6rem;">
+              {% if u.is_blocked %}
+                <button type="button" class="btn-sm btn-toggle-user" data-id="{{ u.id }}" data-action="unblock">
+                  ✅ Reativar Acesso
+                </button>
+              {% else %}
+                <button type="button" class="btn-danger-sm btn-toggle-user" data-id="{{ u.id }}" data-action="block">
+                  🚫 Bloquear e Desconectar Celular
+                </button>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        {% endif %}
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    const admMsg = document.getElementById("admMsg");
+    function showAdmMsg(txt, ok) {
+      admMsg.textContent = txt;
+      admMsg.className = "alert-box " + (ok ? "ok" : "err");
+    }
+
+    function buildWhatsAppMessage(code, recipient) {
+      const origin = window.location.origin;
+      const link = `${origin}/acesso?convite=${encodeURIComponent(code)}`;
+      const saudacao = recipient ? `Olá, ${recipient}!` : "Olá!";
+      return (
+        `${saudacao} Segue seu convite exclusivo de uso único para instalar e acessar o *CardiaSync* no celular:
+
+` +
+        `🔗 Link direto: ${link}
+` +
+        `🎟️ Código de Convite: *${code}*
+
+` +
+        `Ao abrir, o código já estará preenchido — basta escolher sua senha pessoal (ela ficará salva no aparelho).`
+      );
+    }
+
+    async function copyText(text, successMsg) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showAdmMsg(successMsg, true);
+      } catch (e) {
+        prompt("Copie o texto abaixo:", text);
+      }
+    }
+
+    const setupForm = document.getElementById("formAdminSetup");
+    if (setupForm) {
+      setupForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const p1 = document.getElementById("setupAdminPass").value;
+        const p2 = document.getElementById("setupAdminConfirm").value;
+        if (p1 !== p2) {
+          showAdmMsg("As duas senhas mestras não coincidem.", false);
+          return;
+        }
+        const res = await fetch("/api/admin/setup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: p1 }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showAdmMsg(data.error || "Erro ao salvar senha mestra.", false);
+          return;
+        }
+        window.location.reload();
+      });
+    }
+
+    const loginForm = document.getElementById("formAdminLogin");
+    if (loginForm) {
+      loginForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const password = document.getElementById("adminLoginPass").value;
+        const res = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showAdmMsg(data.error || "Senha mestra incorreta.", false);
+          return;
+        }
+        window.location.reload();
+      });
+    }
+
+    const logoutBtn = document.getElementById("btnAdminLogout");
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", async () => {
+        await fetch("/api/admin/logout", { method: "POST" });
+        window.location.reload();
+      });
+    }
+
+    let lastCreatedCode = "";
+    let lastCreatedRecipient = "";
+    const createForm = document.getElementById("formCreateInvite");
+    if (createForm) {
+      createForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const recipient = document.getElementById("invRecipient").value.trim();
+        const custom_code = document.getElementById("invCustomCode").value.trim().toUpperCase();
+        const expires_hours = parseInt(document.getElementById("invExpires").value, 10) || 0;
+
+        const res = await fetch("/api/admin/invites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ recipient, custom_code, expires_hours }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showAdmMsg(data.error || "Erro ao criar convite.", false);
+          return;
+        }
+
+        lastCreatedCode = data.invite.code;
+        lastCreatedRecipient = data.invite.recipient_label || "";
+        document.getElementById("createdCodeText").textContent = lastCreatedCode;
+        document.getElementById("newInviteBox").style.display = "block";
+        showAdmMsg(`Convite ${lastCreatedCode} criado! Clique em "Copiar Mensagem p/ WhatsApp".`, true);
+      });
+
+      document.getElementById("btnCopyCreatedWA").addEventListener("click", () => {
+        const msg = buildWhatsAppMessage(lastCreatedCode, lastCreatedRecipient);
+        copyText(msg, "Mensagem pronta para WhatsApp copiada! Agora é só colar na conversa.");
+      });
+
+      document.getElementById("btnCopyCreatedCode").addEventListener("click", () => {
+        copyText(lastCreatedCode, `Código ${lastCreatedCode} copiado!`);
+      });
+    }
+
+    document.querySelectorAll(".btn-copy-wa-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const code = btn.getAttribute("data-code");
+        const rec = btn.getAttribute("data-recipient");
+        copyText(buildWhatsAppMessage(code, rec), `Mensagem do convite ${code} copiada para WhatsApp!`);
+      });
+    });
+
+    document.querySelectorAll(".btn-revoke-invite").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Cancelar este convite? Ele não poderá mais ser usado.")) return;
+        const id = btn.getAttribute("data-id");
+        const res = await fetch(`/api/admin/invites/${id}/revoke`, { method: "POST" });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          window.location.reload();
+        } else {
+          showAdmMsg(data.error || "Falha ao cancelar convite.", false);
+        }
+      });
+    });
+
+    document.querySelectorAll(".btn-toggle-user").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-id");
+        const action = btn.getAttribute("data-action");
+        const msg = action === "block"
+          ? "Bloquear este usuário e desconectar o celular dele imediatamente?"
+          : "Reativar o acesso deste usuário?";
+        if (!confirm(msg)) return;
+        const res = await fetch(`/api/admin/users/${id}/${action}`, { method: "POST" });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          window.location.reload();
+        } else {
+          showAdmMsg(data.error || "Falha ao atualizar usuário.", false);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

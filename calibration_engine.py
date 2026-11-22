@@ -152,8 +152,20 @@ def extract_basic_features(red_signal: list, fps: float = 30.0) -> Dict:
         "snr_approx": round(snr_approx, 2),
         "n_peaks": len(peaks),
         "stability": round(stability, 3),
-        # índices de pico para HRV/PRV (não serializar em massa no cliente se não precisar)
+        # índices de pico para HRV/PRV e trecho suavizado da onda PPG para tradução neural PPG→ECG
         "peak_indices": peaks,
+        "ppg_wave_snippet": [
+            round(float(v), 2)
+            for v in (
+                np.interp(
+                    np.linspace(0, len(centered) - 1, min(240, len(centered))),
+                    np.arange(len(centered)),
+                    centered,
+                )
+                if len(centered) > 0
+                else []
+            )
+        ],
     }
 
 
