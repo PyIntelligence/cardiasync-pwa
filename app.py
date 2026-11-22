@@ -14,6 +14,7 @@ from calibration_engine import (
     estimate_blood_pressure,
     train_simple_linear_model,
     train_polynomial_global_model,
+    MIN_PERSONAL,
     MIN_GLOBAL,
 )
 from bias_analysis import analyze_demographic_bias
@@ -52,7 +53,6 @@ def _ensure_schema():
     """
     db.create_all()
 
-    # colunas que podem faltar em bancos antigos
     alterations = [
         ("users", "age", "INTEGER"),
         ("users", "sex", "VARCHAR(20)"),
@@ -110,7 +110,6 @@ def _ensure_schema():
                         )
                     )
                 else:
-                    # SQLite: verifica colunas existentes
                     rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
                     existing = {r[1] for r in rows}
                     if column not in existing:
@@ -118,7 +117,6 @@ def _ensure_schema():
                             text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
                         )
             except Exception:
-                # tabela ainda não existe ou coluna já presente — ignore
                 pass
 
 
@@ -129,7 +127,6 @@ def create_tables():
             try:
                 _ensure_schema()
             except Exception as e:
-                # não derruba o app inteiro; loga e segue
                 app.logger.exception("Schema ensure failed: %s", e)
         app._schema_ready = True
 
@@ -225,6 +222,67 @@ def get_active_coeffs(user_id=None):
     return None
 
 
+def resolve_calibration_state(user_name: str):
+    """
+    Verifica se o sistema possui modelo calibrado (pessoal ou global)
+    para liberar medições. Se já houver amostras suficientes no banco mas
+    o modelo ainda não foi compilado, dispara o treino automaticamente.
+    """
+    clean_name = (user_name or "").strip() or "Anônimo"
+    user = User.query.filter_by(name=clean_name).first()
+    user_id = user.id if user else None
+
+    personal_count = (
+        Calibration.query.filter_by(user_id=user_id)
+        .filter(Calibration.signal_quality >= 0.3)
+        .count()
+        if user_id
+        else 0
+    )
+    global_count = Calibration.query.filter(Calibration.signal_quality >= 0.3).count()
+
+    coeffs = get_active_coeffs(user_id)
+
+    # Auto-cura: se já atingiu o mínimo de calibrações mas ainda não há modelo ativo
+    if coeffs is None and user_id and personal_count >= MIN_PERSONAL:
+        coeffs, _ = maybe_train_model(user_id)
+    if coeffs is None and global_count >= MIN_GLOBAL:
+        g_coeffs, _, _, _ = train_global_polynomial(degree=2)
+        if g_coeffs:
+            coeffs = g_coeffs
+
+    is_calibrated = coeffs is not None
+    scope = (coeffs or {}).get("scope") if coeffs else None
+    model_type = (coeffs or {}).get("model_type") if coeffs else None
+
+    if is_calibrated:
+        if scope == "personal":
+            msg = f"Modelo pessoal calibrado ({personal_count} calibrações). Pronto para medir automaticamente."
+        else:
+            msg = f"Modelo global calibrado ({global_count} amostras). Pronto para medir automaticamente."
+    else:
+        faltam_p = max(0, MIN_PERSONAL - personal_count)
+        msg = (
+            f"Calibração obrigatória antes de medir. "
+            f"Você tem {personal_count}/{MIN_PERSONAL} calibrações pessoais "
+            f"(faltam {faltam_p})."
+        )
+
+    return {
+        "is_calibrated": is_calibrated,
+        "coeffs": coeffs,
+        "user_id": user_id,
+        "user_name": clean_name,
+        "model_scope": scope,
+        "model_type": model_type,
+        "personal_calibrations": personal_count,
+        "min_personal": MIN_PERSONAL,
+        "global_calibrations": global_count,
+        "min_global": MIN_GLOBAL,
+        "message": msg,
+    }
+
+
 def maybe_train_model(user_id: int):
     """Treina Ridge pessoal se ≥ 5 calibrações boas do usuário."""
     cals = (
@@ -234,7 +292,7 @@ def maybe_train_model(user_id: int):
         .limit(40)
         .all()
     )
-    if len(cals) < 5:
+    if len(cals) < MIN_PERSONAL:
         return None, len(cals)
 
     coeffs = train_simple_linear_model(cals)
@@ -383,7 +441,29 @@ def historico():
 
 
 # ──────────────────────────────────────────────
-# API – Medição
+# API – Status de Calibração (Pré-verificação)
+# ──────────────────────────────────────────────
+
+@app.route("/api/calibration-status", methods=["GET"])
+def api_calibration_status():
+    user_name = (request.args.get("user_name") or "").strip() or "Anônimo"
+    state = resolve_calibration_state(user_name)
+    return jsonify({
+        "ok": True,
+        "is_calibrated": state["is_calibrated"],
+        "user_name": state["user_name"],
+        "model_scope": state["model_scope"],
+        "model_type": state["model_type"],
+        "personal_calibrations": state["personal_calibrations"],
+        "min_personal": state["min_personal"],
+        "global_calibrations": state["global_calibrations"],
+        "min_global": state["min_global"],
+        "message": state["message"],
+    })
+
+
+# ──────────────────────────────────────────────
+# API – Medição (Somente quando calibrado)
 # ──────────────────────────────────────────────
 
 @app.route("/api/measure", methods=["POST"])
@@ -404,6 +484,23 @@ def api_measure():
     observation = data.get("observation")
     send_email = bool(data.get("send_email"))
     send_whatsapp = bool(data.get("send_whatsapp"))
+
+    # 1. Bloqueia medição se não houver calibração ativa
+    cal_state = resolve_calibration_state(user_name)
+    if not cal_state["is_calibrated"] or cal_state["coeffs"] is None:
+        return jsonify({
+            "ok": False,
+            "requires_calibration": True,
+            "personal_calibrations": cal_state["personal_calibrations"],
+            "min_personal": cal_state["min_personal"],
+            "global_calibrations": cal_state["global_calibrations"],
+            "min_global": cal_state["min_global"],
+            "error": (
+                f"Calibração obrigatória antes de medir. Você possui "
+                f"{cal_state['personal_calibrations']}/{cal_state['min_personal']} calibrações pessoais. "
+                f"Acesse a aba Calibrar primeiro."
+            ),
+        }), 400
 
     if not red_signal or len(red_signal) < 30:
         return jsonify({"ok": False, "error": "Sinal insuficiente. Tente novamente."}), 400
@@ -429,8 +526,15 @@ def api_measure():
     )
 
     user = get_or_create_user(user_name, email=email, phone=phone)
-    coeffs = get_active_coeffs(user.id)
+    coeffs = cal_state["coeffs"]
     sbp, dbp, status, sbp_std, dbp_std = estimate_blood_pressure(features, coeffs)
+
+    if status != "calibrado" or sbp is None or dbp is None:
+        return jsonify({
+            "ok": False,
+            "requires_calibration": True,
+            "error": "Não foi possível estimar a pressão arterial com o modelo atual. Refaça a calibração na aba Calibrar.",
+        }), 400
 
     bp_confidence = assess_bp_confidence(
         ecg_status=variability.get("ecg_status", "missing"),
@@ -450,11 +554,13 @@ def api_measure():
     )
 
     features["hrv"] = variability.get("prv")
+    features["ppg_ibi_ms"] = variability.get("ppg_ibi_ms") or []
     features["ecg_validation"] = {
         "ecg_provided": variability.get("ecg_provided"),
         "ecg_status": variability.get("ecg_status"),
         "hrv_ecg": variability.get("hrv_ecg"),
         "comparison": variability.get("comparison"),
+        "ecg_series": variability.get("ecg_series"),
         "bp_confidence": bp_confidence,
     }
 
@@ -480,14 +586,11 @@ def api_measure():
     db.session.add(measurement)
     db.session.commit()
 
-    if status == "calibrado":
-        msg = (
-            "Estimativa calibrada e validada por ECG (alta confiança)."
-            if bp_confidence["level"] == "high"
-            else "Estimativa calibrada apenas por PPG (sem ECG — menor segurança clínica)."
-        )
-    else:
-        msg = "Frequência cardíaca ok. Pressão ainda sem calibração suficiente (faça ≥ 5 calibrações)."
+    msg = (
+        "Estimativa calibrada e validada por ECG (alta confiança)."
+        if bp_confidence["level"] == "high"
+        else "Estimativa calibrada apenas por PPG (sem ECG — menor segurança clínica)."
+    )
 
     # PDF + envios opcionais
     pdf_info = None
@@ -633,11 +736,13 @@ def api_calibrate():
     )
 
     features["hrv"] = variability.get("prv")
+    features["ppg_ibi_ms"] = variability.get("ppg_ibi_ms") or []
     features["ecg_validation"] = {
         "ecg_provided": variability.get("ecg_provided"),
         "ecg_status": variability.get("ecg_status"),
         "hrv_ecg": variability.get("hrv_ecg"),
         "comparison": variability.get("comparison"),
+        "ecg_series": variability.get("ecg_series"),
         "bp_confidence": bp_confidence,
     }
 
@@ -697,8 +802,8 @@ def api_calibrate():
             f"(R² sistólica ≈ {coeffs.get('r2_systolic', 0):.2f}, "
             f"diastólica ≈ {coeffs.get('r2_diastolic', 0):.2f})."
         )
-    elif total < 5:
-        msg += f" Faltam {5 - total} calibração(ões) pessoais para o modelo individual."
+    elif total < MIN_PERSONAL:
+        msg += f" Faltam {MIN_PERSONAL - total} calibração(ões) pessoais para o modelo individual."
     if global_info:
         msg += f" Modelo global polinomial ativo (n={global_info['n_samples']})."
     elif all_n < MIN_GLOBAL:
@@ -720,6 +825,74 @@ def api_calibrate():
         "global_model": global_info,
         "message": msg,
         "features": features,
+    })
+
+
+# ──────────────────────────────────────────────
+# Detalhes visuais (ECG + PPG + Segurança) para Histórico
+# ──────────────────────────────────────────────
+
+@app.route("/api/measurement/<int:mid>/detail")
+def api_measurement_detail(mid):
+    m = Measurement.query.get_or_404(mid)
+    feats = _parse_features_safe(m.features_json)
+    ecg_val = feats.get("ecg_validation") or {}
+    bp_conf = ecg_val.get("bp_confidence") or {}
+    return jsonify({
+        "ok": True,
+        "kind": "measurement",
+        "id": m.id,
+        "user_name": m.user.name if m.user else "Anônimo",
+        "created_at": m.created_at.strftime("%d/%m/%Y %H:%M:%S") if m.created_at else "—",
+        "heart_rate": m.heart_rate,
+        "estimated_systolic": m.estimated_systolic,
+        "estimated_diastolic": m.estimated_diastolic,
+        "sbp_std": m.sbp_std,
+        "dbp_std": m.dbp_std,
+        "signal_quality": m.signal_quality,
+        "condition": m.condition,
+        "observation": m.observation,
+        "variability": {
+            "prv": feats.get("hrv") or {},
+            "hrv_ecg": ecg_val.get("hrv_ecg"),
+            "comparison": ecg_val.get("comparison") or {},
+            "ecg_provided": bool(ecg_val.get("ecg_provided")),
+            "ecg_status": ecg_val.get("ecg_status") or "missing",
+            "ppg_ibi_ms": feats.get("ppg_ibi_ms") or [],
+            "ecg_series": ecg_val.get("ecg_series") or {},
+        },
+        "bp_confidence": bp_conf,
+    })
+
+
+@app.route("/api/calibration/<int:cid>/detail")
+def api_calibration_detail(cid):
+    c = Calibration.query.get_or_404(cid)
+    feats = _parse_features_safe(c.features_json)
+    ecg_val = feats.get("ecg_validation") or {}
+    bp_conf = ecg_val.get("bp_confidence") or {}
+    return jsonify({
+        "ok": True,
+        "kind": "calibration",
+        "id": c.id,
+        "user_name": c.user.name if c.user else "Anônimo",
+        "created_at": c.created_at.strftime("%d/%m/%Y %H:%M:%S") if c.created_at else "—",
+        "heart_rate": c.heart_rate,
+        "ref_systolic": c.ref_systolic,
+        "ref_diastolic": c.ref_diastolic,
+        "signal_quality": c.signal_quality,
+        "condition": c.condition,
+        "observation": c.notes,
+        "variability": {
+            "prv": feats.get("hrv") or {},
+            "hrv_ecg": ecg_val.get("hrv_ecg"),
+            "comparison": ecg_val.get("comparison") or {},
+            "ecg_provided": bool(ecg_val.get("ecg_provided")),
+            "ecg_status": ecg_val.get("ecg_status") or "missing",
+            "ppg_ibi_ms": feats.get("ppg_ibi_ms") or [],
+            "ecg_series": ecg_val.get("ecg_series") or {},
+        },
+        "bp_confidence": bp_conf,
     })
 
 

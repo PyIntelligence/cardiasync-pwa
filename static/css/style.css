@@ -622,3 +622,173 @@ body {
   color: #e2e8f0;
   font-size: 0.72rem;
 }
+
+
+/* ── Banner de status de calibração e pulso automático ── */
+.cal-banner {
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.1rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.88rem;
+}
+
+.cal-banner.checking {
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.cal-banner.ok {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.cal-banner.blocked {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.cal-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.25rem;
+}
+
+.cal-banner-text {
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+@keyframes pulseRing {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+.guide-circle.stabilizing {
+  animation: pulseRing 0.9s infinite ease-in-out;
+}
+
+
+/* ── Módulo Visual de ECG & Segurança Clínica ── */
+.ecg-module-card {
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 14px;
+  padding: 0.95rem;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.ecg-canvas-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #060d1a;
+}
+
+.ecg-canvas-header {
+  background: #0f172a;
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.ecg-safety-card {
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.ecg-safety-card.level-high {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.ecg-safety-card.level-moderate_mismatch {
+  border-color: rgba(234, 179, 8, 0.45);
+  background: rgba(234, 179, 8, 0.08);
+}
+
+.ecg-safety-card.level-moderate_no_ecg {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.ecg-safety-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  margin-bottom: 0.45rem;
+}
+
+.ecg-safety-score {
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.ecg-safety-bar-bg {
+  height: 8px;
+  background: var(--surface);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 0.65rem;
+}
+
+.ecg-safety-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.35s ease;
+}
+
+.ecg-safety-pillars {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.ecg-safety-pillars li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ecg-safety-pillars strong {
+  color: var(--text);
+}
+
+.ecg-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(2, 6, 23, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.ecg-modal[hidden] {
+  display: none;
+}
+
+.ecg-modal-content {
+  width: 100%;
+  max-width: 560px;
+  max-height: 92vh;
+  overflow-y: auto;
+}

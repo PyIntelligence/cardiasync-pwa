@@ -1,8 +1,6 @@
 /**
  * CardiaSync — Fluxo de Calibração
- * Passo 1: valores do aparelho + ECG opcional → Passo 2: captura câmera → Passo 3: resultado
  */
-
 (() => {
   const panel1 = document.getElementById("panelStep1");
   const panel2 = document.getElementById("panelStep2");
@@ -26,13 +24,14 @@
   const errorBox = document.getElementById("errorBoxCal");
   const errorText = document.getElementById("errorTextCal");
 
-  // Controles opcionais de ECG
   const ecgFileInput = document.getElementById("ecgFileInputCal");
   const ecgRawInput = document.getElementById("ecgRawInputCal");
   const ecgFormatSelect = document.getElementById("ecgFormatSelectCal");
   const ecgPreviewInfo = document.getElementById("ecgPreviewInfoCal");
   const ecgStatusBadge = document.getElementById("ecgStatusBadgeCal");
   const clearEcgBtn = document.getElementById("clearEcgBtnCal");
+  const ecgWaveformCanvas = document.getElementById("ecgWaveformCanvasCal");
+  const btnSampleEcgCal = document.getElementById("btnSampleEcgCal");
 
   let stream = null;
   let capturing = false;
@@ -44,6 +43,8 @@
   let refSystolic = null;
   let refDiastolic = null;
 
+  fetch("/health", { cache: "no-store" }).catch(() => {});
+
   function showError(msg) {
     errorBox.hidden = false;
     errorText.textContent = msg;
@@ -52,58 +53,65 @@
     errorBox.hidden = true;
   }
 
-  function parseEcgInput(rawText, mode = "auto") {
-    if (!rawText || !rawText.trim()) return null;
+  async function fetchJsonWithRetry(url, options = {}, { retries = 2, timeoutMs = 25000, onRetry = null } = {}) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timer);
 
-    const values = rawText
-      .split(/[\s,;|\t\r\n]+/)
-      .map((t) => t.trim())
-      .filter((t) => t !== "" && !isNaN(Number(t)))
-      .map(Number)
-      .filter((n) => isFinite(n) && n >= 0);
+        const rawText = await res.text();
+        let data = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch {
+          if (res.status >= 502 && res.status <= 504 && attempt < retries) {
+            if (onRetry) onRetry(attempt + 1, retries);
+            await new Promise((r) => setTimeout(r, 1800 * (attempt + 1)));
+            continue;
+          }
+          throw new Error(`Resposta inválida do servidor (HTTP ${res.status}). Tente novamente.`);
+        }
 
-    if (values.length < 3) {
-      return { error: "Insira pelo menos 3 batimentos/picos válidos de ECG." };
-    }
-
-    let detected = mode;
-    if (mode === "auto") {
-      const strictlyIncreasing = values.every((v, i) => i === 0 || v > values[i - 1]);
-      const median = [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
-      detected = strictlyIncreasing && median < 250 ? "peaks_sec" : "rr_ms";
-    }
-
-    if (detected === "rr_ms") {
-      const validRR = values.filter((v) => v >= 300 && v <= 2000);
-      if (validRR.length < 3) {
-        return { error: "Intervalos RR fora da faixa fisiológica (300–2000 ms)." };
+        return { res, data };
+      } catch (err) {
+        clearTimeout(timer);
+        lastErr = err;
+        if (attempt < retries) {
+          if (onRetry) onRetry(attempt + 1, retries);
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+          continue;
+        }
       }
-      const meanRR = validRR.reduce((a, b) => a + b, 0) / validRR.length;
-      return {
-        field: "ecg_rr_ms",
-        data: validRR,
-        summary: `${validRR.length} intervalos RR (~${Math.round(60000 / meanRR)} bpm)`,
-      };
     }
-
-    if (!values.every((v, i) => i === 0 || v > values[i - 1])) {
-      return { error: "Tempos de pico R (s) devem estar em ordem crescente." };
+    if (lastErr && lastErr.name === "AbortError") {
+      throw new Error("O servidor demorou para responder. Verifique sua conexão e tente novamente.");
     }
-    return {
-      field: "ecg_peaks_sec",
-      data: values,
-      summary: `${values.length} picos R (${values[values.length - 1].toFixed(1)}s)`,
-    };
+    throw new Error(
+      (lastErr && lastErr.message && lastErr.message !== "Load failed" && lastErr.message !== "Failed to fetch")
+        ? lastErr.message
+        : "Não foi possível conectar ao servidor. Verifique sua conexão com a internet e tente novamente."
+    );
   }
 
   function updateEcgPreview() {
-    if (!ecgRawInput) return;
-    const parsed = parseEcgInput(ecgRawInput.value, ecgFormatSelect?.value || "auto");
+    if (!ecgRawInput || !window.CardiaSyncECG) return;
+    const parsed = window.CardiaSyncECG.parseAndAnalyzeEcg(
+      ecgRawInput.value,
+      ecgFormatSelect?.value || "auto"
+    );
     if (!parsed) {
       ecgPreviewInfo.textContent = "Nenhum dado de ECG carregado.";
       ecgStatusBadge.textContent = "Sem ECG";
       ecgStatusBadge.className = "badge medium";
       clearEcgBtn.hidden = true;
+      window.CardiaSyncECG.renderEcgWaveformCanvas(ecgWaveformCanvas, null);
       return;
     }
     if (parsed.error) {
@@ -111,13 +119,22 @@
       ecgStatusBadge.textContent = "ECG Inválido";
       ecgStatusBadge.className = "badge bad";
       clearEcgBtn.hidden = false;
+      window.CardiaSyncECG.renderEcgWaveformCanvas(ecgWaveformCanvas, parsed);
       return;
     }
     ecgPreviewInfo.textContent = `✅ ${parsed.summary}`;
-    ecgStatusBadge.textContent = "ECG Pronto";
+    ecgStatusBadge.textContent = `ECG Pronto (${parsed.integrityScore}%)`;
     ecgStatusBadge.className = "badge good";
     clearEcgBtn.hidden = false;
+    window.CardiaSyncECG.renderEcgWaveformCanvas(ecgWaveformCanvas, parsed);
   }
+
+  btnSampleEcgCal?.addEventListener("click", () => {
+    if (!window.CardiaSyncECG) return;
+    ecgRawInput.value = window.CardiaSyncECG.SAMPLE_NORMAL_RR.join(", ");
+    if (ecgFormatSelect) ecgFormatSelect.value = "rr_ms";
+    updateEcgPreview();
+  });
 
   ecgFileInput?.addEventListener("change", (event) => {
     const file = event.target.files?.[0];
@@ -138,6 +155,8 @@
     updateEcgPreview();
   });
 
+  setTimeout(updateEcgPreview, 50);
+
   function setStep(n) {
     [step1, step2, step3].forEach((el, i) => {
       el.classList.remove("active", "done");
@@ -149,7 +168,6 @@
     panel3.hidden = n !== 3;
   }
 
-  // ─── Passo 1 → 2 ───
   btnGo.addEventListener("click", async () => {
     hideError();
     const s = parseFloat(document.getElementById("refSystolic").value);
@@ -164,7 +182,9 @@
       return;
     }
 
-    const parsedEcg = parseEcgInput(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto");
+    const parsedEcg = window.CardiaSyncECG
+      ? window.CardiaSyncECG.parseAndAnalyzeEcg(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto")
+      : null;
     if (parsedEcg && parsedEcg.error) {
       showError("Corrija ou limpe o campo de ECG antes de continuar: " + parsedEcg.error);
       return;
@@ -176,7 +196,6 @@
     await initCamera();
   });
 
-  // ─── Câmera ───
   async function initCamera() {
     if (!window.isSecureContext && location.hostname !== "localhost") {
       showError("HTTPS necessário para acessar a câmera.");
@@ -262,7 +281,6 @@
     animationId = requestAnimationFrame(loop);
   }
 
-  // ─── Captura ───
   btnStart.addEventListener("click", () => {
     if (capturing) return;
     hideError();
@@ -320,30 +338,42 @@
       skin_tone: document.getElementById("skinCal")?.value || null,
     };
 
-    const parsedEcg = parseEcgInput(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto");
+    const parsedEcg = window.CardiaSyncECG
+      ? window.CardiaSyncECG.parseAndAnalyzeEcg(ecgRawInput?.value || "", ecgFormatSelect?.value || "auto")
+      : null;
     if (parsedEcg && !parsedEcg.error) {
       payload[parsedEcg.field] = parsedEcg.data;
     }
 
     try {
       cameraStatus.textContent = "Salvando calibração…";
-      const res = await fetch("/api/calibrate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
+      const { res, data } = await fetchJsonWithRetry(
+        "/api/calibrate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        {
+          retries: 2,
+          timeoutMs: 25000,
+          onRetry: (n, max) => {
+            cameraStatus.textContent = `Reconectando ao servidor (${n}/${max})…`;
+          },
+        }
+      );
 
-      if (!data.ok) {
-        showError(data.error || "Erro ao salvar calibração.");
+      if (!res.ok || !data.ok) {
+        showError(data?.error || `Erro ao salvar calibração (HTTP ${res.status}).`);
         return;
       }
 
+      const conf = data.bp_confidence || {};
       const ecgBadgeRes = document.getElementById("resEcgBadgeCal");
       if (ecgBadgeRes) {
         if (data.ecg_validated) {
-          ecgBadgeRes.textContent = "⚡ Validado por ECG";
-          ecgBadgeRes.className = "badge good";
+          ecgBadgeRes.textContent = conf.label || "⚡ Validado por ECG";
+          ecgBadgeRes.className = "badge " + (conf.badge_class || "good");
         } else {
           ecgBadgeRes.textContent = "Sem ECG (Apenas PPG)";
           ecgBadgeRes.className = "badge medium";
@@ -364,10 +394,21 @@
 
       setStep(3);
 
+      if (window.CardiaSyncECG) {
+        const calSafety = document.getElementById("calSafetyContainer");
+        if (calSafety) {
+          calSafety.innerHTML = window.CardiaSyncECG.buildSafetyHtml(conf, data.variability);
+        }
+        const calCmpCanvas = document.getElementById("calCompareCanvas");
+        if (calCmpCanvas) {
+          window.CardiaSyncECG.renderEcgVsPpgComparisonCanvas(calCmpCanvas, data.variability, conf);
+        }
+      }
+
       if (stream) stream.getTracks().forEach((t) => t.stop());
     } catch (err) {
       console.error(err);
-      showError("Falha de comunicação com o servidor.");
+      showError(err.message || "Falha de comunicação com o servidor.");
     }
   }
 

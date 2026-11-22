@@ -4,13 +4,23 @@
 {% block content %}
 <section class="measure-section">
   <div class="card measure-card">
-    <h2>Medição por Câmera (PPG)</h2>
+    <h2>Medição por Câmera (PPG) + ECG</h2>
     <p class="hint">
       Encoste o dedo cobrindo <strong>totalmente</strong> a câmera traseira e o flash.
-      Mantenha o celular estável. Você verá o preview ao vivo abaixo.
+      Com o sistema calibrado, a medição inicia <strong>automaticamente</strong> ao detectar o dedo.
     </p>
 
-    <!-- Preview da câmera + overlay -->
+    <div id="calibrationBanner" class="cal-banner checking">
+      <div class="cal-banner-header">
+        <span id="calBannerIcon">⏳</span>
+        <strong id="calBannerTitle">Verificando calibração…</strong>
+      </div>
+      <p id="calBannerText" class="cal-banner-text">Conectando ao servidor para validar o modelo calibrado.</p>
+      <a id="btnGoCalibrate" href="{{ url_for('calibrate_page') }}" class="btn btn-primary" style="margin-top:0.65rem;" hidden>
+        📐 Ir para Calibrar →
+      </a>
+    </div>
+
     <div class="camera-wrapper" id="cameraWrapper">
       <video id="video" playsinline muted autoplay></video>
       <canvas id="overlay"></canvas>
@@ -21,9 +31,149 @@
       <div class="camera-status" id="cameraStatus">Aguardando câmera…</div>
     </div>
 
-    <!-- Controles de contexto -->
-    <div class="form-row">
-      <label for="userName">Nome</label>
+    <div class="progress-area" id="progressArea" hidden style="margin-bottom:1.1rem;">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-text">
+        <span><strong id="countdown">15</strong>s restantes</span>
+        <span id="qualityBadge" class="badge">Qualidade: —</span>
+      </div>
+    </div>
+
+    <div class="result-box" id="resultBox" hidden style="margin-bottom:1.25rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.9rem;">
+        <h3 style="margin-bottom:0;">Resultado da Medição</h3>
+        <span class="badge medium" id="resConfidenceBadge">Confiança: —</span>
+      </div>
+      <div class="result-grid">
+        <div class="result-item">
+          <span class="label">Frequência Cardíaca</span>
+          <span class="value" id="resHR">—</span>
+          <span class="unit">bpm</span>
+        </div>
+        <div class="result-item">
+          <span class="label">Pressão Estimada</span>
+          <span class="value" id="resBP">—</span>
+          <span class="unit">mmHg</span>
+        </div>
+        <div class="result-item">
+          <span class="label">Qualidade Óptica</span>
+          <span class="value" id="resQuality">—</span>
+        </div>
+      </div>
+      <div class="result-grid" style="margin-top:0.75rem;">
+        <div class="result-item">
+          <span class="label">RMSSD (PRV)</span>
+          <span class="value" id="resRmssd" style="font-size:1.1rem;">—</span>
+          <span class="unit">ms</span>
+        </div>
+        <div class="result-item">
+          <span class="label">SDNN (PRV)</span>
+          <span class="value" id="resSdnn" style="font-size:1.1rem;">—</span>
+          <span class="unit">ms</span>
+        </div>
+        <div class="result-item">
+          <span class="label">pNN50</span>
+          <span class="value" id="resPnn50" style="font-size:1.1rem;">—</span>
+          <span class="unit">%</span>
+        </div>
+      </div>
+
+      <div id="ecgSafetyContainer" style="margin-top:0.95rem;"></div>
+
+      <div class="ecg-canvas-box" style="margin-top:0.85rem;">
+        <div class="ecg-canvas-header">
+          <span>📈 Comparativo Batimento a Batimento: ECG × Câmera (PPG)</span>
+        </div>
+        <canvas id="ecgPpgCompareCanvas" style="width:100%;height:185px;display:block;"></canvas>
+      </div>
+
+      <p class="result-msg" id="resHrvNote" style="font-size:0.8rem;color:var(--muted);"></p>
+      <p class="result-msg" id="resEcgNote" style="font-size:0.82rem;"></p>
+      <p class="result-msg" id="resMsg"></p>
+      <div id="sendStatus" style="font-size:0.85rem;color:var(--muted);margin:0.5rem 0;"></div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
+        <a id="btnPdf" class="btn btn-secondary" href="#" target="_blank" style="flex:1;margin-top:0;display:none;">📄 Baixar PDF</a>
+        <button type="button" id="btnRearmAuto" class="btn btn-primary" style="flex:1;">🔄 Nova Medição</button>
+      </div>
+    </div>
+
+    <div class="error-box" id="errorBox" hidden style="margin-bottom:1.1rem;">
+      <p id="errorText"></p>
+    </div>
+
+    <div class="form-row" style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;background:var(--surface);padding:0.7rem 0.9rem;border-radius:12px;border:1px solid var(--border);">
+      <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;color:var(--text);margin-bottom:0;cursor:pointer;">
+        <input type="checkbox" id="autoMeasureToggle" checked style="width:auto;" />
+        ⚡ Medir automaticamente ao colocar o dedo
+      </label>
+      <button type="button" id="btnStart" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.45rem 0.85rem;font-size:0.85rem;" disabled>
+        Iniciar Manualmente
+      </button>
+    </div>
+
+    <div class="ecg-module-card" id="ecgPanel">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.55rem;">
+        <strong style="font-size:0.96rem;color:#93c5fd;">⚡ ECG de Referência & Segurança Clínica (Opcional)</strong>
+        <span class="badge medium" id="ecgStatusBadge">Sem ECG (Segurança 48%)</span>
+      </div>
+
+      <p class="hint" style="margin-bottom:0.75rem;font-size:0.83rem;line-height:1.45;">
+        <strong>Para que serve o ECG aqui?</strong> A câmera mede o pulso óptico no dedo (PPG), que pode variar com dedo frio, movimento ou extrassístoles.
+        Ao anexar os intervalos RR de um ECG (cinta cardíaca, smartwatch ou eletrocardiógrafo), o sistema:
+        <br>• <strong>1) Visualiza o traçado P-QRS-T</strong> e filtra automaticamente batimentos ectópicos/artefatos (&gt;20% de desvio);
+        <br>• <strong>2) Cruza ECG × Câmera</strong> — se a FC concordar (≤ 5 bpm), confirma <strong>Alta Segurança (85–98%)</strong> e reduz a margem de erro (±mmHg).
+      </p>
+
+      <div style="display:flex;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.65rem;">
+        <button type="button" id="btnSampleEcgNormal" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.35rem 0.7rem;font-size:0.8rem;">
+          ⚡ Exemplo ECG Normal
+        </button>
+        <button type="button" id="btnSampleEcgEctopic" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.35rem 0.7rem;font-size:0.8rem;">
+          ⚠️ Exemplo com Extrassístole
+        </button>
+        <label for="ecgFileInput" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.35rem 0.75rem;font-size:0.8rem;cursor:pointer;">
+          📂 Importar .CSV / .TXT
+        </label>
+        <input type="file" id="ecgFileInput" accept=".csv,.txt,text/csv,text/plain" hidden />
+      </div>
+
+      <div class="form-row two-cols" style="margin-bottom:0.55rem;">
+        <div>
+          <label for="ecgFormatSelect">Formato dos dados ECG</label>
+          <select id="ecgFormatSelect">
+            <option value="auto">Detectar automaticamente</option>
+            <option value="rr_ms">Intervalos RR (ms)</option>
+            <option value="peaks_sec">Tempos de Pico R (s)</option>
+          </select>
+        </div>
+        <div style="display:flex;flex-direction:column;justify-content:flex-end;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;">
+            <span id="ecgPreviewInfo" style="font-size:0.8rem;color:var(--muted);">Nenhum ECG carregado.</span>
+            <button type="button" id="clearEcgBtn" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.25rem 0.6rem;font-size:0.76rem;" hidden>Limpar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-bottom:0.65rem;">
+        <textarea
+          id="ecgRawInput"
+          rows="2"
+          placeholder="Cole os intervalos RR em ms (ex: 820, 815, 830, 810) ou clique em 'Exemplo ECG Normal' acima…"
+        ></textarea>
+      </div>
+
+      <div class="ecg-canvas-box">
+        <div class="ecg-canvas-header">
+          <span>🫀 Visualização do Traçado ECG (Verde = Normal · Vermelho = Ectopia/Artefato Filtrado)</span>
+        </div>
+        <canvas id="ecgWaveformCanvas" style="width:100%;height:165px;display:block;"></canvas>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-top:1rem;">
+      <label for="userName">Nome (usado para localizar sua calibração)</label>
       <input type="text" id="userName" placeholder="Seu nome" value="Anônimo" />
     </div>
 
@@ -90,132 +240,19 @@
       </div>
     </div>
 
-    <div class="form-row" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;">
-      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);">
-        <input type="checkbox" id="sendEmail" /> Enviar PDF por e-mail
+    <div class="form-row" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;margin-bottom:0;">
+      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);margin-bottom:0;">
+        <input type="checkbox" id="sendEmail" style="width:auto;" /> Enviar PDF por e-mail
       </label>
-      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);">
-        <input type="checkbox" id="sendWhatsapp" /> Notificar no WhatsApp
+      <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.9rem;color:var(--muted);margin-bottom:0;">
+        <input type="checkbox" id="sendWhatsapp" style="width:auto;" /> Notificar no WhatsApp
       </label>
-    </div>
-
-    <!-- ECG Profissional Opcional -->
-    <details class="form-row" id="ecgPanel" style="border:1px solid var(--border);border-radius:12px;padding:0.85rem;background:rgba(15,23,42,0.55);">
-      <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-weight:600;font-size:0.92rem;">
-        <span>⚡ Validação por ECG (Opcional)</span>
-        <span class="badge medium" id="ecgStatusBadge">Sem ECG</span>
-      </summary>
-
-      <div style="margin-top:0.8rem;">
-        <p class="hint" style="margin-bottom:0.7rem;font-size:0.84rem;">
-          Sem ECG, a pressão arterial continua sendo medida pela câmera, porém com menor segurança clínica.
-          Para validação padrão-ouro, cole os intervalos RR ou importe um arquivo <strong>.csv</strong> ou <strong>.txt</strong>.
-        </p>
-
-        <div class="form-row two-cols" style="align-items:end;margin-bottom:0.65rem;">
-          <div>
-            <label for="ecgFormatSelect">Formato dos dados</label>
-            <select id="ecgFormatSelect">
-              <option value="auto">Detectar automaticamente</option>
-              <option value="rr_ms">Intervalos RR (ms)</option>
-              <option value="peaks_sec">Tempos de Pico R (s)</option>
-            </select>
-          </div>
-          <div>
-            <label for="ecgFileInput" class="btn btn-secondary" style="margin-top:0;padding:0.7rem 0.9rem;font-size:0.9rem;cursor:pointer;">
-              📂 Carregar .CSV / .TXT
-            </label>
-            <input type="file" id="ecgFileInput" accept=".csv,.txt,text/csv,text/plain" hidden />
-          </div>
-        </div>
-
-        <div class="form-row" style="margin-bottom:0.5rem;">
-          <textarea
-            id="ecgRawInput"
-            rows="3"
-            placeholder="Cole os intervalos RR em ms (ex: 820, 815, 830, 810) ou tempos dos picos R em segundos..."
-          ></textarea>
-        </div>
-
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--muted);">
-          <span id="ecgPreviewInfo">Nenhum dado de ECG carregado.</span>
-          <button type="button" id="clearEcgBtn" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.25rem 0.65rem;font-size:0.78rem;" hidden>Limpar</button>
-        </div>
-      </div>
-    </details>
-
-    <!-- Botão principal -->
-    <button id="btnStart" class="btn btn-primary btn-lg" disabled>
-      <span class="btn-icon">🔴</span> Iniciar Captura (15s)
-    </button>
-
-    <!-- Progresso -->
-    <div class="progress-area" id="progressArea" hidden>
-      <div class="progress-bar-bg">
-        <div class="progress-bar-fill" id="progressFill"></div>
-      </div>
-      <div class="progress-text">
-        <span id="countdown">15</span>s restantes
-        <span id="qualityBadge" class="badge">Qualidade: —</span>
-      </div>
-    </div>
-
-    <!-- Resultado -->
-    <div class="result-box" id="resultBox" hidden>
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.9rem;">
-        <h3 style="margin-bottom:0;">Resultado</h3>
-        <span class="badge medium" id="resConfidenceBadge">Confiança: —</span>
-      </div>
-      <div class="result-grid">
-        <div class="result-item">
-          <span class="label">Frequência Cardíaca</span>
-          <span class="value" id="resHR">—</span>
-          <span class="unit">bpm</span>
-        </div>
-        <div class="result-item">
-          <span class="label">Pressão Estimada</span>
-          <span class="value" id="resBP">—</span>
-          <span class="unit">mmHg</span>
-        </div>
-        <div class="result-item">
-          <span class="label">Qualidade do Sinal</span>
-          <span class="value" id="resQuality">—</span>
-        </div>
-      </div>
-      <div class="result-grid" style="margin-top:0.75rem;">
-        <div class="result-item">
-          <span class="label">RMSSD (PRV)</span>
-          <span class="value" id="resRmssd" style="font-size:1.1rem;">—</span>
-          <span class="unit">ms</span>
-        </div>
-        <div class="result-item">
-          <span class="label">SDNN (PRV)</span>
-          <span class="value" id="resSdnn" style="font-size:1.1rem;">—</span>
-          <span class="unit">ms</span>
-        </div>
-        <div class="result-item">
-          <span class="label">pNN50</span>
-          <span class="value" id="resPnn50" style="font-size:1.1rem;">—</span>
-          <span class="unit">%</span>
-        </div>
-      </div>
-      <p class="result-msg" id="resHrvNote" style="font-size:0.8rem;color:var(--muted);"></p>
-      <p class="result-msg" id="resEcgNote" style="font-size:0.82rem;"></p>
-      <p class="result-msg" id="resMsg"></p>
-      <div id="sendStatus" style="font-size:0.85rem;color:var(--muted);margin:0.5rem 0;"></div>
-      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
-        <a id="btnPdf" class="btn btn-secondary" href="#" target="_blank" style="flex:1;display:none;">📄 Baixar PDF</a>
-      </div>
-    </div>
-
-    <!-- Erros -->
-    <div class="error-box" id="errorBox" hidden>
-      <p id="errorText"></p>
     </div>
   </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/ecg_visualizer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/measure.js') }}"></script>
 {% endblock %}

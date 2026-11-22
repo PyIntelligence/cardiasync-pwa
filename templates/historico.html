@@ -9,6 +9,7 @@
   </div>
   {% endif %}
   <h2>Histórico de Medições</h2>
+  <p class="hint" style="margin-bottom:0.75rem;">Clique em <strong>👁️ Sinal</strong> para visualizar o traçado ECG, a curva PPG e o índice de segurança clínica.</p>
   <div class="table-wrapper">
     <table class="data-table">
       <thead>
@@ -20,8 +21,8 @@
           <th>Diastólica</th>
           <th>Qualidade</th>
           <th>Validação ECG</th>
+          <th>Sinal / ECG</th>
           <th>Condição</th>
-          <th>Observação</th>
           <th>PDF</th>
         </tr>
       </thead>
@@ -47,8 +48,12 @@
               {{ m.ecg_status_label or 'Sem ECG' }}
             </span>
           </td>
+          <td>
+            <button type="button" class="btn btn-secondary btn-inspect-signal" data-kind="measurement" data-id="{{ m.id }}" style="width:auto;margin-top:0;padding:0.25rem 0.6rem;font-size:0.78rem;white-space:nowrap;">
+              👁️ Sinal
+            </button>
+          </td>
           <td>{{ m.condition or '—' }}</td>
-          <td>{{ m.observation or '' }}</td>
           <td>
             <a href="{{ url_for('measurement_pdf', mid=m.id) }}" target="_blank" style="color:#60a5fa;text-decoration:none;font-weight:600;">📄 PDF</a>
           </td>
@@ -72,6 +77,7 @@
           <th>FC</th>
           <th>Qualidade</th>
           <th>Validação ECG</th>
+          <th>Sinal / ECG</th>
           <th>Condição</th>
         </tr>
       </thead>
@@ -89,13 +95,120 @@
               {{ c.ecg_status_label or 'Sem ECG' }}
             </span>
           </td>
+          <td>
+            <button type="button" class="btn btn-secondary btn-inspect-signal" data-kind="calibration" data-id="{{ c.id }}" style="width:auto;margin-top:0;padding:0.25rem 0.6rem;font-size:0.78rem;white-space:nowrap;">
+              👁️ Sinal
+            </button>
+          </td>
           <td>{{ c.condition or '—' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="empty">Nenhuma calibração ainda.</td></tr>
+        <tr><td colspan="9" class="empty">Nenhuma calibração ainda.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
+<div id="signalModal" class="ecg-modal" hidden>
+  <div class="ecg-modal-content card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+      <h3 id="modalSignalTitle" style="margin:0;color:#60a5fa;">Detalhes do Sinal ECG × PPG</h3>
+      <button type="button" id="closeSignalModal" class="btn btn-secondary" style="width:auto;margin-top:0;padding:0.3rem 0.75rem;">✕ Fechar</button>
+    </div>
+    <p id="modalSignalMeta" class="hint" style="margin-bottom:0.8rem;font-size:0.85rem;"></p>
+
+    <div id="modalSafetyContainer" style="margin-bottom:0.85rem;"></div>
+
+    <div class="ecg-canvas-box" id="modalEcgWaveBox" style="margin-bottom:0.85rem;">
+      <div class="ecg-canvas-header">
+        <span>🫀 Traçado Eletrocardiográfico (ECG P-QRS-T)</span>
+      </div>
+      <canvas id="modalEcgWaveCanvas" style="width:100%;height:155px;display:block;"></canvas>
+    </div>
+
+    <div class="ecg-canvas-box">
+      <div class="ecg-canvas-header">
+        <span>📈 Comparativo Batimento a Batimento: ECG × Câmera (PPG)</span>
+      </div>
+      <canvas id="modalCompareCanvas" style="width:100%;height:180px;display:block;"></canvas>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/ecg_visualizer.js') }}"></script>
+<script>
+(() => {
+  const modal = document.getElementById("signalModal");
+  const closeBtn = document.getElementById("closeSignalModal");
+  const titleEl = document.getElementById("modalSignalTitle");
+  const metaEl = document.getElementById("modalSignalMeta");
+  const safetyEl = document.getElementById("modalSafetyContainer");
+  const waveBox = document.getElementById("modalEcgWaveBox");
+  const waveCanvas = document.getElementById("modalEcgWaveCanvas");
+  const cmpCanvas = document.getElementById("modalCompareCanvas");
+
+  closeBtn?.addEventListener("click", () => { modal.hidden = true; });
+  modal?.addEventListener("click", (e) => {
+    if (e.target === modal) modal.hidden = true;
+  });
+
+  document.querySelectorAll(".btn-inspect-signal").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const kind = btn.dataset.kind;
+      const id = btn.dataset.id;
+      titleEl.textContent = "Carregando sinal…";
+      metaEl.textContent = "";
+      safetyEl.innerHTML = "";
+      modal.hidden = false;
+
+      try {
+        const res = await fetch(`/api/${kind}/${id}/detail`, { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          titleEl.textContent = "Erro ao carregar detalhes";
+          return;
+        }
+
+        const bpTxt = kind === "measurement"
+          ? `PA Estimada: ${data.estimated_systolic ?? "—"}/${data.estimated_diastolic ?? "—"} mmHg`
+          : `PA Referência: ${data.ref_systolic}/${data.ref_diastolic} mmHg`;
+
+        titleEl.textContent = `${kind === "measurement" ? "Medição" : "Calibração"} #${data.id} — ${data.user_name}`;
+        metaEl.textContent = `${data.created_at} · FC: ${data.heart_rate ?? "—"} bpm · ${bpTxt}`;
+
+        const v = data.variability || {};
+        const conf = data.bp_confidence || {};
+
+        if (window.CardiaSyncECG) {
+          safetyEl.innerHTML = window.CardiaSyncECG.buildSafetyHtml(conf, v);
+
+          const ecgSeries = v.ecg_series || {};
+          if (v.ecg_provided && ecgSeries.raw_rr_ms && ecgSeries.raw_rr_ms.length) {
+            waveBox.hidden = false;
+            const hrv = v.hrv_ecg || {};
+            window.CardiaSyncECG.renderEcgWaveformCanvas(waveCanvas, {
+              rawRR: ecgSeries.raw_rr_ms,
+              cleanRR: ecgSeries.clean_rr_ms || [],
+              rejectedIndices: ecgSeries.rejected_indices || [],
+              meanHR: hrv.mean_hr_bpm || data.heart_rate || "—",
+              rmssd: hrv.rmssd_ms ?? "—",
+              sdnn: hrv.sdnn_ms ?? "—",
+            });
+          } else {
+            waveBox.hidden = true;
+          }
+
+          window.CardiaSyncECG.renderEcgVsPpgComparisonCanvas(cmpCanvas, v, conf);
+        }
+      } catch (err) {
+        titleEl.textContent = "Falha de conexão";
+        metaEl.textContent = err.message || "";
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

@@ -1,5 +1,5 @@
 /* CardiaSync — Service Worker (necessário para instalação PWA) */
-const CACHE = "cardiasync-v1";
+const CACHE = "cardiasync-v3";
 const PRECACHE = [
   "/",
   "/static/manifest.json",
@@ -30,20 +30,17 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(req.url);
   // Não cachear APIs nem respostas não-HTTP
-  if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname.startsWith("/api/") || url.pathname === "/health") return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
-      const fetched = fetch(req)
-        .then((res) => {
-          if (res && res.ok && url.origin === self.location.origin) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || fetched;
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok && url.origin === self.location.origin) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req))
   );
 });

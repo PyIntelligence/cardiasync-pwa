@@ -7,24 +7,36 @@
     <img src="{{ url_for('static', filename='icons/icon.svg') }}" alt="CardiaSync" width="96" height="96" />
   </div>
   <h1>CardiaSync</h1>
-  <p class="subtitle">Monitoramento experimental de frequência cardíaca e estimativa de pressão arterial por fotopletismografia (PPG) com a câmera do celular.</p>
+  <p class="subtitle">Monitoramento experimental de frequência cardíaca e estimativa de pressão arterial por fotopletismografia (PPG) com validação eletrocardiográfica (ECG).</p>
 
   <div class="card-grid">
     <a href="{{ url_for('calibrate_page') }}" class="action-card">
       <div class="action-icon">📐</div>
-      <h3>Calibrar</h3>
-      <p>Meça primeiro com o aparelho de pressão e depois com a câmera para criar o modelo personalizado.</p>
+      <h3>Calibrar (Obrigatório)</h3>
+      <p>Meça primeiro com o aparelho de pressão e depois com a câmera para criar seu modelo personalizado.</p>
     </a>
     <a href="{{ url_for('measure_page') }}" class="action-card primary">
       <div class="action-icon">📷</div>
-      <h3>Medir</h3>
-      <p>Capture o sinal PPG com o dedo sobre a câmera e o flash. Veja o preview ao vivo.</p>
+      <h3>Medir Automaticamente</h3>
+      <p>Encoste o dedo sobre a câmera e o flash para iniciar a leitura automática e visualizar o ECG × PPG.</p>
     </a>
     <a href="{{ url_for('historico') }}" class="action-card">
       <div class="action-icon">📊</div>
-      <h3>Histórico</h3>
-      <p>Veja todas as medições e calibrações salvas no banco de dados.</p>
+      <h3>Histórico & Sinais</h3>
+      <p>Inspecione os traçados ECG, curvas PPG, índice de segurança clínica e relatórios PDF.</p>
     </a>
+  </div>
+
+  <div class="info-box" style="margin-bottom:1rem;">
+    <h4>⚡ Papel do ECG e Segurança Clínica</h4>
+    <p style="color:var(--muted);font-size:0.86rem;margin-bottom:0.55rem;">
+      A câmera capta o <strong>pulso óptico no dedo (PPG)</strong>, enquanto o <strong>ECG</strong> fornece o padrão-ouro elétrico do coração:
+    </p>
+    <ol>
+      <li><strong>Visualização & Filtro de Ectopia:</strong> O traçado P-QRS-T é exibido na tela e batimentos irregulares (&gt;20% de desvio) são isolados automaticamente.</li>
+      <li><strong>Segurança Alta (85–98%):</strong> Quando ECG e câmera concordam (ΔFC ≤ 5 bpm), o sistema confirma sincronia e usa a margem nominal (±mmHg).</li>
+      <li><strong>Modo Apenas Câmera (48%):</strong> Sem ECG, a medição funciona como triagem, mas amplia a margem de incerteza por precaução.</li>
+    </ol>
   </div>
 
   <div class="info-box">
@@ -32,8 +44,8 @@
     <ol>
       <li>Meça a pressão com um esfigmomanômetro validado.</li>
       <li>Imediatamente depois, faça a captura pela câmera na tela <strong>Calibrar</strong>.</li>
-      <li>Repita algumas vezes (ideal ≥ 5) em condições parecidas.</li>
-      <li>O sistema guarda os pares e, no futuro, treina um modelo simples de regressão.</li>
+      <li>Repita pelo menos 2 vezes (ideal ≥ 5) em condições parecidas.</li>
+      <li>Após calibrado, a tela <strong>Medir</strong> inicia a leitura automaticamente ao encostar o dedo.</li>
     </ol>
   </div>
 </section>

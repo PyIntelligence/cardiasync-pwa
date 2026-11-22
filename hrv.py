@@ -32,37 +32,95 @@ def clean_ibi(ibi_ms: np.ndarray, min_ms: float = 333.0, max_ms: float = 1500.0)
     return arr[(arr >= min_ms) & (arr <= max_ms)]
 
 
+def analyze_ecg_rr_detailed(
+    ibi_ms: np.ndarray,
+    min_ms: float = 300.0,
+    max_ms: float = 2000.0,
+    ectopic_threshold: float = 0.20,
+) -> Dict[str, Any]:
+    """
+    Limpeza profissional de intervalos RR de ECG com rastreamento de batimentos
+    aceitos vs. rejeitados (ectopia/artefato) para visualização clínica.
+    """
+    if ibi_ms is None or len(ibi_ms) == 0:
+        return {
+            "clean": np.array([], dtype=float),
+            "status": "missing",
+            "raw_rr_ms": [],
+            "clean_rr_ms": [],
+            "rejected_indices": [],
+            "ectopic_count": 0,
+            "total_beats": 0,
+        }
+
+    arr = np.asarray(ibi_ms, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    raw_list = [round(float(x), 1) for x in arr]
+
+    in_range_mask = (arr >= min_ms) & (arr <= max_ms)
+    valid_range = arr[in_range_mask]
+    if len(valid_range) < 3:
+        return {
+            "clean": np.array([], dtype=float),
+            "status": "invalid_range",
+            "raw_rr_ms": raw_list,
+            "clean_rr_ms": [],
+            "rejected_indices": list(range(len(raw_list))),
+            "ectopic_count": len(raw_list),
+            "total_beats": len(raw_list),
+        }
+
+    median_rr = float(np.median(valid_range))
+    if median_rr <= 0:
+        return {
+            "clean": np.array([], dtype=float),
+            "status": "invalid_range",
+            "raw_rr_ms": raw_list,
+            "clean_rr_ms": [],
+            "rejected_indices": list(range(len(raw_list))),
+            "ectopic_count": len(raw_list),
+            "total_beats": len(raw_list),
+        }
+
+    rejected_indices: List[int] = []
+    clean_vals: List[float] = []
+    for idx, val in enumerate(arr):
+        if val < min_ms or val > max_ms or abs(val - median_rr) / median_rr > ectopic_threshold:
+            rejected_indices.append(idx)
+        else:
+            clean_vals.append(float(val))
+
+    clean_arr = np.asarray(clean_vals, dtype=float)
+    if len(clean_arr) < 3:
+        return {
+            "clean": np.array([], dtype=float),
+            "status": "noisy_ecg",
+            "raw_rr_ms": raw_list,
+            "clean_rr_ms": [round(float(x), 1) for x in clean_arr],
+            "rejected_indices": rejected_indices,
+            "ectopic_count": len(rejected_indices),
+            "total_beats": len(raw_list),
+        }
+
+    return {
+        "clean": clean_arr,
+        "status": "validated",
+        "raw_rr_ms": raw_list,
+        "clean_rr_ms": [round(float(x), 1) for x in clean_arr],
+        "rejected_indices": rejected_indices,
+        "ectopic_count": len(rejected_indices),
+        "total_beats": len(raw_list),
+    }
+
+
 def clean_ecg_rr(
     ibi_ms: np.ndarray,
     min_ms: float = 300.0,
     max_ms: float = 2000.0,
     ectopic_threshold: float = 0.20,
 ) -> Tuple[np.ndarray, str]:
-    """
-    Limpeza profissional de intervalos RR de ECG:
-      1. Faixa fisiológica (300–2000 ms -> 30–200 bpm).
-      2. Rejeição de artefatos e batimentos ectópicos (> 20% de desvio da mediana local).
-
-    Retorna (rr_limpo, status).
-    """
-    if ibi_ms is None or len(ibi_ms) == 0:
-        return np.array([], dtype=float), "missing"
-
-    arr = np.asarray(ibi_ms, dtype=float)
-    arr = arr[np.isfinite(arr)]
-    arr = arr[(arr >= min_ms) & (arr <= max_ms)]
-    if len(arr) < 3:
-        return np.array([], dtype=float), "invalid_range"
-
-    median_rr = float(np.median(arr))
-    if median_rr <= 0:
-        return np.array([], dtype=float), "invalid_range"
-
-    clean = arr[np.abs(arr - median_rr) / median_rr <= ectopic_threshold]
-    if len(clean) < 3:
-        return np.array([], dtype=float), "noisy_ecg"
-
-    return clean, "validated"
+    detail = analyze_ecg_rr_detailed(ibi_ms, min_ms, max_ms, ectopic_threshold)
+    return detail["clean"], detail["status"]
 
 
 def compute_hrv_metrics(ibi_ms: Sequence[float], label: str = "prv") -> Dict[str, Any]:
@@ -105,7 +163,6 @@ def compute_hrv_metrics(ibi_ms: Sequence[float], label: str = "prv") -> Dict[str
     pnn50 = (100.0 * nn50 / len(diff)) if len(diff) else None
     cv = (100.0 * sdnn / mean_ibi) if mean_ibi > 0 else None
 
-    # Confiabilidade grosseira: mais intervalos + menos CV extremo
     reliable = n >= 8 and mean_ibi > 0 and (cv is None or cv < 40)
 
     return {
@@ -137,21 +194,39 @@ def parse_ecg_input(
     ecg_rr_ms: Optional[Sequence[float]] = None,
     ecg_peaks_sec: Optional[Sequence[float]] = None,
 ) -> Tuple[np.ndarray, str]:
-    """
-    Aceita:
-      - lista de intervalos RR em ms, ou
-      - timestamps de picos R em segundos
-    Retorna (ibi_limpo_ms, ecg_status).
-    """
+    detail = parse_ecg_input_detailed(ecg_rr_ms=ecg_rr_ms, ecg_peaks_sec=ecg_peaks_sec)
+    return detail["clean"], detail["status"]
+
+
+def parse_ecg_input_detailed(
+    ecg_rr_ms: Optional[Sequence[float]] = None,
+    ecg_peaks_sec: Optional[Sequence[float]] = None,
+) -> Dict[str, Any]:
     if ecg_rr_ms is not None and len(list(ecg_rr_ms)) > 0:
-        return clean_ecg_rr(np.asarray(list(ecg_rr_ms), dtype=float))
+        return analyze_ecg_rr_detailed(np.asarray(list(ecg_rr_ms), dtype=float))
     if ecg_peaks_sec is not None and len(list(ecg_peaks_sec)) >= 2:
         t = np.asarray(list(ecg_peaks_sec), dtype=float)
         t = t[np.isfinite(t)]
         if len(t) < 2 or not np.all(np.diff(t) > 0):
-            return np.array([], dtype=float), "invalid_order"
-        return clean_ecg_rr(np.diff(t) * 1000.0)
-    return np.array([], dtype=float), "missing"
+            return {
+                "clean": np.array([], dtype=float),
+                "status": "invalid_order",
+                "raw_rr_ms": [],
+                "clean_rr_ms": [],
+                "rejected_indices": [],
+                "ectopic_count": 0,
+                "total_beats": 0,
+            }
+        return analyze_ecg_rr_detailed(np.diff(t) * 1000.0)
+    return {
+        "clean": np.array([], dtype=float),
+        "status": "missing",
+        "raw_rr_ms": [],
+        "clean_rr_ms": [],
+        "rejected_indices": [],
+        "ectopic_count": 0,
+        "total_beats": 0,
+    }
 
 
 def compare_prv_hrv(prv: Dict[str, Any], hrv: Dict[str, Any]) -> Dict[str, Any]:
@@ -199,16 +274,20 @@ def assess_bp_confidence(
     if ecg_status == "validated":
         abs_delta_hr = float((comparison or {}).get("abs_delta_hr") or 0.0)
         if abs_delta_hr <= 5.0:
+            safety_score = max(85, min(98, int(round(98 - abs_delta_hr * 2.2))))
             return {
                 "level": "high",
+                "safety_score": safety_score,
                 "badge_class": "good",
                 "label": "Validado por ECG (Alta Confiança)",
                 "adjusted_sbp_std": round(float(base_sbp_std), 1) if base_sbp_std is not None else None,
                 "adjusted_dbp_std": round(float(base_dbp_std), 1) if base_dbp_std is not None else None,
                 "warning": None,
             }
+        safety_score = max(55, min(74, int(round(78 - abs_delta_hr * 1.2))))
         return {
             "level": "moderate_mismatch",
+            "safety_score": safety_score,
             "badge_class": "medium",
             "label": "Divergência ECG × Câmera (Confiança Reduzida)",
             "adjusted_sbp_std": round(float(base_sbp_std) * 1.5, 1) if base_sbp_std is not None else None,
@@ -229,6 +308,7 @@ def assess_bp_confidence(
 
     return {
         "level": "moderate_no_ecg",
+        "safety_score": 48,
         "badge_class": "medium",
         "label": "Sem ECG — Precisão Reduzida",
         "adjusted_sbp_std": round(max(float(base_sbp_std) * 1.4, 6.0), 1) if base_sbp_std is not None else None,
@@ -247,10 +327,16 @@ def build_variability_report(
     ecg_peaks_sec: Optional[Sequence[float]] = None,
 ) -> Dict[str, Any]:
     """
-    Relatório completo: PRV sempre; HRV + comparação + status ECG quando enviado.
+    Relatório completo: PRV sempre; HRV + comparação + séries batimento-a-batimento quando enviado.
     """
-    prv = hrv_from_ppg_peaks(peaks, fps)
-    ecg_ibi, ecg_status = parse_ecg_input(ecg_rr_ms=ecg_rr_ms, ecg_peaks_sec=ecg_peaks_sec)
+    raw_ppg_ibi = ibi_from_peak_indices(peaks, fps)
+    clean_ppg_ibi = clean_ibi(raw_ppg_ibi)
+    prv = compute_hrv_metrics(raw_ppg_ibi, label="prv")
+
+    ecg_detail = parse_ecg_input_detailed(ecg_rr_ms=ecg_rr_ms, ecg_peaks_sec=ecg_peaks_sec)
+    ecg_ibi = ecg_detail["clean"]
+    ecg_status = ecg_detail["status"]
+
     if len(ecg_ibi) >= 3:
         hrv = compute_hrv_metrics(ecg_ibi, label="hrv")
         comparison = compare_prv_hrv(prv, hrv)
@@ -267,4 +353,12 @@ def build_variability_report(
         "comparison": comparison,
         "ecg_provided": hrv is not None,
         "ecg_status": ecg_status,
+        "ppg_ibi_ms": [round(float(x), 1) for x in clean_ppg_ibi],
+        "ecg_series": {
+            "raw_rr_ms": ecg_detail["raw_rr_ms"],
+            "clean_rr_ms": ecg_detail["clean_rr_ms"],
+            "rejected_indices": ecg_detail["rejected_indices"],
+            "ectopic_count": ecg_detail["ectopic_count"],
+            "total_beats": ecg_detail["total_beats"],
+        },
     }
